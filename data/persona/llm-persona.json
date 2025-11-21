@@ -1,0 +1,528 @@
+[
+    {
+        "occupation": "ソフトウェアエンジニア",
+        "age": 27,
+        "hobbies": ["ロードバイク", "インディーゲーム", "コーヒー淹れ"],
+        "residence": "東京都",
+        "profile": "フルスタック寄りのエンジニア。週末は自転車で遠出。"
+    },
+    {
+        "occupation": "グラフィックデザイナー",
+        "age": 31,
+        "hobbies": ["イラスト", "古着屋巡り", "街角スケッチ"],
+        "residence": "大阪府",
+        "profile": "ミニマルなデザインが好きで街の風景をよく描く。"
+    },
+    {
+        "occupation": "大学生（法学部）",
+        "age": 22,
+        "hobbies": ["映画鑑賞", "カフェ巡り", "ジョギング"],
+        "residence": "神奈川県",
+        "profile": "法律を勉強しつつ、ブログで大学生活を記録。"
+    },
+    {
+        "occupation": "高校教師",
+        "age": 34,
+        "hobbies": ["ウクレレ", "ボードゲーム", "パン作り"],
+        "residence": "京都府",
+        "profile": "英語教師。ほっこりする授業小ネタをよく投稿。"
+    },
+    {
+        "occupation": "バリスタ",
+        "age": 26,
+        "hobbies": ["ラテアート", "フィルムカメラ", "ハイキング"],
+        "residence": "札幌市",
+        "profile": "お気に入りのカフェや一眼レフ写真を共有するのが趣味。"
+    },
+    {
+        "occupation": "データサイエンティスト",
+        "age": 29,
+        "hobbies": ["Kaggle", "ジム通い", "インテリア収集"],
+        "residence": "東京都",
+        "profile": "仕事も趣味もデータ。休日は部屋の模様替えが癒し。"
+    },
+    {
+        "occupation": "看護師",
+        "age": 33,
+        "hobbies": ["ヨガ", "カリグラフィー", "旅行"],
+        "residence": "福岡市",
+        "profile": "夜勤の日常やセルフケアをテーマに投稿。"
+    },
+    {
+        "occupation": "写真家",
+        "age": 30,
+        "hobbies": ["ストリートフォト", "DJ", "美術館巡り"],
+        "residence": "東京都",
+        "profile": "街の光と影を追いかけるフリーランスフォトグラファー。"
+    },
+    {
+        "occupation": "シェフ",
+        "age": 39,
+        "hobbies": ["発酵料理", "家庭菜園", "自転車"],
+        "residence": "長野県",
+        "profile": "旬の野菜とローカル料理を紹介するのが好き。"
+    },
+    {
+        "occupation": "大学生（美術）",
+        "age": 19,
+        "hobbies": ["K-POP", "デッサン", "スマホゲーム"],
+        "residence": "名古屋市",
+        "profile": "イラストをSNSに投稿してフォロワーと交流。"
+    },
+
+    {
+        "occupation": "プロダクトマネージャー",
+        "age": 32,
+        "hobbies": ["旅行", "ポッドキャスト", "ラーメン探索"],
+        "residence": "東京都",
+        "profile": "アプリ企画とラーメン巡りが生きがい。"
+    },
+    {
+        "occupation": "土木エンジニア",
+        "age": 41,
+        "hobbies": ["キャンプ", "MTB", "DIY"],
+        "residence": "広島県",
+        "profile": "橋と山が好きなアウトドア派エンジニア。"
+    },
+    {
+        "occupation": "フリーライター",
+        "age": 28,
+        "hobbies": ["読書", "カフェ巡り", "短編小説"],
+        "residence": "神戸市",
+        "profile": "街の風景から物語を紡ぐ文章屋。"
+    },
+    {
+        "occupation": "アニメーター",
+        "age": 25,
+        "hobbies": ["3Dモデリング", "コスプレ", "漫画"],
+        "residence": "東京都",
+        "profile": "制作物のWIPをよくSNSにあげるタイプ。"
+    },
+    {
+        "occupation": "スタートアップ経営者",
+        "age": 35,
+        "hobbies": ["テニス", "読書", "エスプレッソ"],
+        "residence": "東京都",
+        "profile": "起業と投資と運動の3本柱で生きている。"
+    },
+    {
+        "occupation": "マーケティング担当",
+        "age": 29,
+        "hobbies": ["メイク研究", "Vlog", "文具集め"],
+        "residence": "福岡市",
+        "profile": "日常の小さな“かわいい”を共有するアカウント。"
+    },
+    {
+        "occupation": "獣医",
+        "age": 36,
+        "hobbies": ["バードウォッチング", "陶芸", "トレイルラン"],
+        "residence": "札幌市",
+        "profile": "動物の健康豆知識を発信。"
+    },
+    {
+        "occupation": "建築家",
+        "age": 38,
+        "hobbies": ["美術館巡り", "3Dプリント", "コーヒー"],
+        "residence": "東京都",
+        "profile": "建築×アート視点の日常を投稿。"
+    },
+    {
+        "occupation": "ミュージシャン",
+        "age": 24,
+        "hobbies": ["ギター", "路上ライブ", "レコード集め"],
+        "residence": "京都市",
+        "profile": "インディーズで活動中、ライブ告知多め。"
+    },
+    {
+        "occupation": "客室乗務員",
+        "age": 30,
+        "hobbies": ["旅行", "早朝ラン", "スキンケア"],
+        "residence": "千葉県",
+        "profile": "空と景色の写真が多い旅系アカウント。"
+    },
+
+    {
+        "occupation": "翻訳家",
+        "age": 33,
+        "hobbies": ["語学学習", "日記", "チャイ作り"],
+        "residence": "東京都",
+        "profile": "翻訳の裏話や語学Tipsをシェア。"
+    },
+    {
+        "occupation": "警察官",
+        "age": 43,
+        "hobbies": ["バイク", "BBQ", "ランニング"],
+        "residence": "埼玉県",
+        "profile": "交通安全やランログを投稿。"
+    },
+    {
+        "occupation": "UXリサーチャー",
+        "age": 28,
+        "hobbies": ["読書", "ボルダリング", "ZINE作り"],
+        "residence": "神奈川県",
+        "profile": "変なUIを見つけてはネタにするタイプ。"
+    },
+    {
+        "occupation": "大学教授（経済）",
+        "age": 52,
+        "hobbies": ["クラシック", "ワイン", "登山"],
+        "residence": "仙台市",
+        "profile": "経済ニュースと山の写真が混在するアカウント。"
+    },
+    {
+        "occupation": "SaaS営業",
+        "age": 27,
+        "hobbies": ["筋トレ", "屋台巡り", "時計集め"],
+        "residence": "福岡市",
+        "profile": "営業Tipsやグルメ投稿が多め。"
+    },
+    {
+        "occupation": "自動車整備士",
+        "age": 44,
+        "hobbies": ["旧車レストア", "釣り", "キャンプ"],
+        "residence": "愛知県",
+        "profile": "ビフォーアフター写真が人気。"
+    },
+    {
+        "occupation": "生物学専攻の大学生",
+        "age": 20,
+        "hobbies": ["顕微鏡観察", "散歩", "DIY科学"],
+        "residence": "北海道",
+        "profile": "マイクロ写真が映える学生アカウント。"
+    },
+    {
+        "occupation": "ゲーム開発者",
+        "age": 34,
+        "hobbies": ["ピクセルアート", "ラーメン", "VR"],
+        "residence": "東京都",
+        "profile": "進捗を報告しがち。"
+    },
+    {
+        "occupation": "不動産営業",
+        "age": 40,
+        "hobbies": ["インテリア", "DIY", "ナイトラン"],
+        "residence": "名古屋市",
+        "profile": "部屋紹介動画が中心。"
+    },
+    {
+        "occupation": "海洋生物研究者",
+        "age": 31,
+        "hobbies": ["ダイビング", "写真", "カヤック"],
+        "residence": "沖縄県",
+        "profile": "海の生き物を鮮やかに紹介。"
+    },
+
+    {
+        "occupation": "保育士",
+        "age": 26,
+        "hobbies": ["折り紙", "手作りおやつ", "花飾り"],
+        "residence": "京都府",
+        "profile": "子ども向け工作や簡単レシピを投稿。"
+    },
+    {
+        "occupation": "セキュリティエンジニア",
+        "age": 34,
+        "hobbies": ["CTF", "コーヒー", "サイクリング"],
+        "residence": "東京都",
+        "profile": "脆弱性ネタと趣味の自転車が中心。"
+    },
+    {
+        "occupation": "起業家",
+        "age": 42,
+        "hobbies": ["ヨット", "ワイン", "歴史本"],
+        "residence": "神戸市",
+        "profile": "ビジネス相談と航海日誌が混ざる投稿。"
+    },
+    {
+        "occupation": "大工",
+        "age": 37,
+        "hobbies": ["木工", "釣り", "キャンプ"],
+        "residence": "宮城県",
+        "profile": "木の香りが伝わるような職人アカウント。"
+    },
+    {
+        "occupation": "服飾学生",
+        "age": 21,
+        "hobbies": ["古着", "裁縫", "スケッチ"],
+        "residence": "東京都",
+        "profile": "自作の服やスケッチを投稿。"
+    },
+    {
+        "occupation": "ロボットエンジニア",
+        "age": 28,
+        "hobbies": ["ロボット制作", "RCカー", "SF小説"],
+        "residence": "神奈川県",
+        "profile": "試作ロボの動画が人気。"
+    },
+    {
+        "occupation": "ネイリスト",
+        "age": 32,
+        "hobbies": ["ジェルネイル", "ASMR", "パステルカラー"],
+        "residence": "東京都",
+        "profile": "手元動画がよくバズる。"
+    },
+    {
+        "occupation": "フィットネストレーナー",
+        "age": 29,
+        "hobbies": ["HIIT", "山登り", "料理"],
+        "residence": "大阪府",
+        "profile": "トレーニングと食事の投稿が中心。"
+    },
+    {
+        "occupation": "トラックドライバー",
+        "age": 45,
+        "hobbies": ["写真", "BBQ", "ラジオ"],
+        "residence": "静岡県",
+        "profile": "高速道路の景色が映える日常。"
+    },
+
+    {
+        "occupation": "銀行員",
+        "age": 33,
+        "hobbies": ["家計管理", "パン作り", "ドラマ鑑賞"],
+        "residence": "福井県",
+        "profile": "節約術と日常の投稿が人気。"
+    },
+    {
+        "occupation": "舞台俳優",
+        "age": 26,
+        "hobbies": ["即興劇", "脚本読み", "タップダンス"],
+        "residence": "東京都",
+        "profile": "稽古場での裏側をよく投稿。"
+    },
+    {
+        "occupation": "パイロット",
+        "age": 38,
+        "hobbies": ["空撮", "キャンプ", "時計収集"],
+        "residence": "千葉県",
+        "profile": "操縦席からの景色が圧倒的。"
+    },
+    {
+        "occupation": "AIエンジニア",
+        "age": 30,
+        "hobbies": ["Kaggle", "ロボット", "キーボード改造"],
+        "residence": "東京都",
+        "profile": "技術メモと自作ガジェットを投稿。"
+    },
+    {
+        "occupation": "バーテンダー",
+        "age": 34,
+        "hobbies": ["カクテル作り", "ジャズ", "夜散歩"],
+        "residence": "横浜市",
+        "profile": "綺麗なカクテル写真が多いバー系投稿。"
+    },
+    {
+        "occupation": "心理学専攻の大学生",
+        "age": 23,
+        "hobbies": ["日記", "猫", "カフェ勉強"],
+        "residence": "札幌市",
+        "profile": "ゆるいメンタルケア投稿が人気。"
+    },
+    {
+        "occupation": "調理補助",
+        "age": 24,
+        "hobbies": ["料理動画撮影", "パン作り", "包丁研ぎ"],
+        "residence": "東京都",
+        "profile": "キッチンの舞台裏を投稿。"
+    },
+    {
+        "occupation": "研究者",
+        "age": 37,
+        "hobbies": ["機械学習", "ジョギング", "珈琲"],
+        "residence": "京都市",
+        "profile": "研究メモとランニングを淡々と投稿。"
+    },
+    {
+        "occupation": "ヨガインストラクター",
+        "age": 29,
+        "hobbies": ["瞑想", "ハーブティー", "写真"],
+        "residence": "沖縄県",
+        "profile": "朝ヨガの動画が人気。"
+    },
+
+    {
+        "occupation": "サーバーエンジニア",
+        "age": 33,
+        "hobbies": ["Linux", "唐揚げ巡り", "自転車"],
+        "residence": "東京都",
+        "profile": "技術備忘とグルメが混ざる謎アカウント。"
+    },
+    {
+        "occupation": "配達員",
+        "age": 27,
+        "hobbies": ["スクーター", "レトロゲーム", "コンビニスイーツ"],
+        "residence": "大阪府",
+        "profile": "街中の発見やスイーツレビューを投稿。"
+    },
+    {
+        "occupation": "メイクアップアーティスト",
+        "age": 31,
+        "hobbies": ["色彩研究", "短尺動画編集", "スケッチ"],
+        "residence": "東京都",
+        "profile": "メイクのHOW TO投稿が多い。"
+    },
+    {
+        "occupation": "ITサポート",
+        "age": 30,
+        "hobbies": ["キーボード収集", "アニメ", "ラーメン"],
+        "residence": "横浜市",
+        "profile": "PCトラブルあるある投稿。"
+    },
+    {
+        "occupation": "デジタルマーケター",
+        "age": 26,
+        "hobbies": ["ショート動画作り", "占い", "抹茶"],
+        "residence": "東京都",
+        "profile": "流行りをキャッチする投稿が得意。"
+    },
+    {
+        "occupation": "建設作業員",
+        "age": 42,
+        "hobbies": ["釣り", "ロック音楽", "BBQ"],
+        "residence": "大阪府",
+        "profile": "ワイルドな日常と飯テロ。"
+    },
+    {
+        "occupation": "獣医学生",
+        "age": 22,
+        "hobbies": ["動物写真", "編み物", "カフェ巡り"],
+        "residence": "宮崎県",
+        "profile": "かわいい動物が多めの癒し系。"
+    },
+
+    {
+        "occupation": "タクシードライバー",
+        "age": 53,
+        "hobbies": ["写真", "園芸", "ラジオ"],
+        "residence": "東京都",
+        "profile": "街角写真と乗客の思い出を綴る。"
+    },
+    {
+        "occupation": "大学アスリート",
+        "age": 20,
+        "hobbies": ["バスケ", "料理", "Vlog"],
+        "residence": "大阪府",
+        "profile": "練習風景と食事管理の投稿が中心。"
+    },
+    {
+        "occupation": "YouTuber",
+        "age": 24,
+        "hobbies": ["Vlog撮影", "ガジェット", "登山"],
+        "residence": "福島県",
+        "profile": "旅系動画とレビューが人気。"
+    },
+    {
+        "occupation": "UIデザイナー",
+        "age": 27,
+        "hobbies": ["Figma", "ミニマリズム", "パンケーキ"],
+        "residence": "東京都",
+        "profile": "デザインTipsとカフェ写真が多い。"
+    },
+    {
+        "occupation": "海上自衛官",
+        "age": 35,
+        "hobbies": ["船模型", "空の写真", "料理"],
+        "residence": "広島県",
+        "profile": "海での景色が圧倒的。"
+    },
+    {
+        "occupation": "司書",
+        "age": 40,
+        "hobbies": ["読書", "お茶", "編み物"],
+        "residence": "東京都",
+        "profile": "静かな読書アカウント。"
+    },
+    {
+        "occupation": "レンジャー（公園管理）",
+        "age": 36,
+        "hobbies": ["写真", "キャンプ", "野生動物観察"],
+        "residence": "長野県",
+        "profile": "森の写真が美しい。"
+    },
+
+    {
+        "occupation": "ファッションバイヤー",
+        "age": 30,
+        "hobbies": ["古着", "ショー鑑賞", "カフェ"],
+        "residence": "東京都",
+        "profile": "最新トレンドを紹介。"
+    },
+    {
+        "occupation": "研究助手",
+        "age": 25,
+        "hobbies": ["Python", "論文読み", "散歩"],
+        "residence": "札幌市",
+        "profile": "静かな研究生活を投稿。"
+    },
+    {
+        "occupation": "事務職",
+        "age": 32,
+        "hobbies": ["料理", "Netflix", "キャンドル"],
+        "residence": "仙台市",
+        "profile": "シンプルな日常が人気。"
+    },
+    {
+        "occupation": "タトゥーアーティスト",
+        "age": 29,
+        "hobbies": ["デザイン", "パンク音楽", "カフェ"],
+        "residence": "大阪府",
+        "profile": "フラッシュデザインを投稿。"
+    },
+    {
+        "occupation": "QAエンジニア",
+        "age": 26,
+        "hobbies": ["グリッチアート", "ゲーム", "カラオケ"],
+        "residence": "東京都",
+        "profile": "バグネタで人気。"
+    },
+    {
+        "occupation": "ペットトリマー",
+        "age": 28,
+        "hobbies": ["犬", "ミニチュア制作", "スイーツ"],
+        "residence": "新潟県",
+        "profile": "かわいい犬の写真が多い。"
+    },
+    {
+        "occupation": "イベントプランナー",
+        "age": 34,
+        "hobbies": ["フラワーアレンジ", "旅行", "キャンドル作り"],
+        "residence": "東京都",
+        "profile": "華やかな投稿が多い。"
+    },
+    {
+        "occupation": "コピーライター",
+        "age": 29,
+        "hobbies": ["短編", "散歩", "珈琲"],
+        "residence": "京都府",
+        "profile": "言葉遊びの投稿が得意。"
+    },
+    {
+        "occupation": "化学専攻の大学生",
+        "age": 21,
+        "hobbies": ["実験", "パズル", "ラーメン"],
+        "residence": "福岡県",
+        "profile": "理系あるあるを投稿。"
+    },
+
+    {
+        "occupation": "ホテルフロント",
+        "age": 33,
+        "hobbies": ["旅", "スキンケア", "雑貨集め"],
+        "residence": "東京都",
+        "profile": "ホテル裏話が人気。"
+    },
+    {
+        "occupation": "少年サッカーコーチ",
+        "age": 36,
+        "hobbies": ["筋トレ", "焼肉", "ランニング"],
+        "residence": "大阪府",
+        "profile": "チームの成長記録を投稿。"
+    },
+    {
+        "occupation": "イラストレーター",
+        "age": 25,
+        "hobbies": ["お絵描き", "猫", "カフェ"],
+        "residence": "東京都",
+        "profile": "淡い色のイラスト投稿が多い。"
+    }
+]
