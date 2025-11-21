@@ -63,15 +63,13 @@ AIエージェントを用いる理由は以下の二点である。
 ## フォルダ構成 (予定)
 ```text
 .
-├── README.md
 ├── data
-│   ├── raw             # シミュレーションの生ログデータ
-│   └── processed       # 分析用に加工されたデータ
-├── notebooks           # データ分析・可視化用ノートブック
-├── src
-│   ├── agents          # エージェント定義 (Oasisの拡張)
-│   ├── algorithms      # 推薦アルゴリズムの実装
-│   ├── simulation      # シミュレーション実行のメインロジック
-│   └── utils           # ヘルパー関数
-└── requirements.txt
+├── main.py
+├── pyproject.toml
+├── README.md
+└── src
+    ├── agents
+    ├── algorithms
+    ├── simulation
+    └── utils
 ```
