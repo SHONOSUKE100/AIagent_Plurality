@@ -25,6 +25,8 @@ location_list = [
 ]
 
 def generate_persona():
+    user_name = "user_" + str(random.randint(1, 10000))
+    name = user_name
     job = random.choice(job_list)
     age = random.randint(18, 65)
     hobbies = random.sample(hobby_list, random.randint(2, 4))
@@ -46,11 +48,13 @@ def generate_persona():
         profile = f"{location}在住。{job}として活動中。{hobbies[0]}が趣味で、最近は{hobbies[-1]}にもハマっています。"
     
     return {
+        "user_name": user_name,
+        "name": name,
         "occupation": job,
         "age": age,
         "hobbies": hobbies,
         "residence": location,
-        "user_profile": profile
+        "description": profile
     }
 
 if __name__ == "__main__":
