@@ -1,0 +1,14 @@
+[tasks.simulation]
+run = "uv run main.py --persona-path {{ persona_path | default('data/persona/persona.json') }} --seed-post-count {{ seed_post_count | default(20) }} --llm-rounds {{ llm_rounds | default(1) }}"
+
+[tasks.neo4j-up]
+run = "docker compose up neo4j -d"
+
+[tasks.neo4j-down]
+run = "docker compose down"
+
+[tasks.neo4j-export]
+run = "uv run src/visualization/neo4j_export.py --sqlite-path {{ sqlite_path | default('data/twitter_simulation.db') }} --neo4j-password {{ neo4j_password | default('neo4j1234') }}"
+
+[tasks.evaluate]
+run = "uv run src/evaluation/main.py --sqlite-path {{ sqlite_path | default('data/twitter_simulation.db') }}"

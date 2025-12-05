@@ -55,6 +55,14 @@ AIエージェントを用いる理由は以下の二点である。
    uv run src/visualization/neo4j_export.py --sqlite-path data/twitter_simulation.db --neo4j-password neo4j1234
    ```
    Neo4j Desktop や Browser で `MATCH (n) RETURN n LIMIT 200;` などを実行するとネットワークが確認できる。
+- よく使うコマンドは [mise](https://mise.jdx.dev/) のタスクからも実行できる。
+   ```bash
+   mise run simulation
+   mise run neo4j-up
+   mise run neo4j-export
+   mise run evaluate
+   ```
+   引数を変えたい場合は `mise run simulation -- --seed-post-count 50` のように `--` 以降へ渡す。
 
 ### 検討する推薦アルゴリズム
 本研究では、以下のアルゴリズムによる社会動態の違いを比較検証する。
