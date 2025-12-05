@@ -49,12 +49,12 @@ AIエージェントを用いる理由は以下の二点である。
    ```bash
    uv run main.py --persona-path data/persona/persona.json --seed-post-count 20 --llm-rounds 1
    ```
-- 生成されたログや状態は `data/twitter_simulation.db` に保存される。
+   `results/<timestamp>/` 以下に `simulation.db`、`metadata.yaml`（実行設定）、使用ペルソナのコピーが保存され、`results/index.csv` と `results/latest_run.txt` へも記録される。
 - Neo4j に可視化用のノード・エッジを投入する。
    ```bash
-   uv run src/visualization/neo4j_export.py --sqlite-path data/twitter_simulation.db --neo4j-password neo4j1234
+   uv run src/visualization/neo4j_export.py --neo4j-password neo4j1234
    ```
-   Neo4j Desktop や Browser で `MATCH (n) RETURN n LIMIT 200;` などを実行するとネットワークが確認できる。
+   `results/latest_run.txt` で記録された最新のディレクトリから `simulation.db` を参照し、Neo4j へ投入した後は同ディレクトリに `graph.graphml` と `neo4j_export.yaml` が生成される。Neo4j Desktop や Browser で `MATCH (n) RETURN n LIMIT 200;` などを実行するとネットワークが確認できる。
 - よく使うコマンドは [mise](https://mise.jdx.dev/) のタスクからも実行できる。
    ```bash
    mise run simulation
@@ -63,6 +63,10 @@ AIエージェントを用いる理由は以下の二点である。
    mise run evaluate
    ```
    引数を変えたい場合は `mise run simulation -- --seed-post-count 50` のように `--` 以降へ渡す。
+
+## データ保管について
+- `results/` : 各実験ごとの成果物（`simulation.db`、`metadata.yaml`、GraphML など）や `index.csv`（実行ログ）、`latest_run.txt`（直近実験パス）を格納。
+- `data/neo4j/` : Docker Compose で起動した Neo4j のデータ・ログ・プラグインディレクトリ。自動生成されるため手動編集は不要。
 
 ### 検討する推薦アルゴリズム
 本研究では、以下のアルゴリズムによる社会動態の違いを比較検証する。

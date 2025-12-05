@@ -8,7 +8,7 @@ run = "docker compose up neo4j -d"
 run = "docker compose down"
 
 [tasks.neo4j-export]
-run = "uv run src/visualization/neo4j_export.py --sqlite-path {{ sqlite_path | default('data/twitter_simulation.db') }} --neo4j-password {{ neo4j_password | default('neo4j1234') }}"
+run = "uv run src/visualization/neo4j_export.py --neo4j-password {{ neo4j_password | default('neo4j1234') }}"
 
 [tasks.evaluate]
-run = "uv run src/evaluation/main.py --sqlite-path {{ sqlite_path | default('data/twitter_simulation.db') }}"
+run = "uv run src/evaluation/main.py"
