@@ -6,3 +6,4 @@ uv.lock
 *.log
 .DS_Store
 notebooks/log/
+data/

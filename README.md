@@ -34,6 +34,28 @@ AIエージェントを用いる理由は以下の二点である。
 - **LLM**: OpenAI GPT-4o / GPT-4o-mini (予定)
 - **Language**: Python
 
+## 使い方
+- Python 3.12+ と依存ライブラリをインストールする。
+   ```bash
+   pip install -e .
+   ```
+- OpenAI の API キーを環境変数 `OPENAI_API_KEY` に設定する。
+- Neo4j を Docker Compose で起動する。
+   ```bash
+   docker compose up neo4j -d
+   ```
+   デフォルト認証情報は `neo4j/neo4j1234`（`docker-compose.yml` 参照）。停止する場合は `docker compose down`。
+- シミュレーションを実行する。
+   ```bash
+   uv run main.py --persona-path data/persona/persona.json --seed-post-count 20 --llm-rounds 1
+   ```
+- 生成されたログや状態は `data/twitter_simulation.db` に保存される。
+- Neo4j に可視化用のノード・エッジを投入する。
+   ```bash
+   uv run src/visualization/neo4j_export.py --sqlite-path data/twitter_simulation.db --neo4j-password neo4j1234
+   ```
+   Neo4j Desktop や Browser で `MATCH (n) RETURN n LIMIT 200;` などを実行するとネットワークが確認できる。
+
 ### 検討する推薦アルゴリズム
 本研究では、以下のアルゴリズムによる社会動態の違いを比較検証する。
 
