@@ -38,8 +38,10 @@ AIエージェントを用いる理由は以下の二点である。
 - Python 3.12+ と依存ライブラリをインストールする。
    ```bash
    pip install -e .
+   # または uv を使用する場合
+   uv sync
    ```
-- OpenAI の API キーを環境変数 `OPENAI_API_KEY` に設定する。
+- OpenAI の API キーを環境変数 `OPENAI_API_KEY` に設定する（`.env` に記載して `mise` / `uv` から読み込むのがおすすめ）。
 - Neo4j を Docker Compose で起動する。
    ```bash
    docker compose up neo4j -d
@@ -49,12 +51,12 @@ AIエージェントを用いる理由は以下の二点である。
    ```bash
    uv run main.py --persona-path data/persona/persona.json --seed-post-count 20 --llm-rounds 1
    ```
-   `results/<timestamp>/` 以下に `simulation.db`、`metadata.yaml`（実行設定）、使用ペルソナのコピーが保存され、`results/index.csv` と `results/latest_run.txt` へも記録される。
+   実行結果は `results/<timestamp>/` 以下に保存され、`simulation.db`、`metadata.yaml`、使用ペルソナのコピー、設定ファイルのスナップショット（`config/` 配下）などが生成される。実行ログは `results/index.csv` と `results/latest_run.txt` に追記される。
 - Neo4j に可視化用のノード・エッジを投入する。
    ```bash
    uv run src/visualization/neo4j_export.py --neo4j-password neo4j1234
    ```
-   `results/latest_run.txt` で記録された最新のディレクトリから `simulation.db` を参照し、Neo4j へ投入した後は同ディレクトリに `graph.graphml` と `neo4j_export.yaml` が生成される。Neo4j Desktop や Browser で `MATCH (n) RETURN n LIMIT 200;` などを実行するとネットワークが確認できる。
+   `results/latest_run.txt` のディレクトリから `simulation.db` を読み込み、Neo4j を上書きする。完了後は同ディレクトリに `graph.graphml` と `neo4j_export.yaml` が生成される。Neo4j Browser で `MATCH (n) RETURN n LIMIT 200;` などを実行するとネットワークを確認できる。
 - よく使うコマンドは [mise](https://mise.jdx.dev/) のタスクからも実行できる。
    ```bash
    mise run simulation
@@ -62,11 +64,22 @@ AIエージェントを用いる理由は以下の二点である。
    mise run neo4j-export
    mise run evaluate
    ```
-   引数を変えたい場合は `mise run simulation -- --seed-post-count 50` のように `--` 以降へ渡す。
+   追加引数は `mise run simulation -- --seed-post-count 50 --llm-rounds 5` のように `--` 以降へ渡すか、`mise run simulation seed_post_count=50` のようにテンプレート変数として指定できる。
+
+### 実験管理とバージョン管理
+- 各実行は UTC タイムスタンプをもとに `results/<timestamp>/` へ保存される。
+- `metadata.yaml` にはペルソナ、シード設定、LLM ラウンド数、Git コミット ID、エラーの有無などのメタ情報が記録される。
+- `config/` には実行時点の主要設定ファイル（`.env`、`.mise.toml`、`docker-compose.yml`、`pyproject.toml`、`uv.lock`）と CLI 引数 `run_args.yaml`、Neo4j 接続情報 `neo4j.yaml` がコピーされる。
+- 失敗した実行でもアーティファクトが保存され、`metadata.yaml` および `results/index.csv` の `status` / `error` カラムで確認できる。
+- 最新実行パスは `results/latest_run.txt` に記録され、Neo4j エクスポートや評価スクリプトの参照先に利用される。
 
 ## データ保管について
-- `results/` : 各実験ごとの成果物（`simulation.db`、`metadata.yaml`、GraphML など）や `index.csv`（実行ログ）、`latest_run.txt`（直近実験パス）を格納。
-- `data/neo4j/` : Docker Compose で起動した Neo4j のデータ・ログ・プラグインディレクトリ。自動生成されるため手動編集は不要。
+- `results/`
+   - 各実験ディレクトリ: `simulation.db`、`metadata.yaml`、ペルソナコピー、`config/`（設定スナップショット）、`graph.graphml` や `neo4j_export.yaml`（エクスポート実行時）などを格納。
+   - `index.csv`: 実行履歴（タイムスタンプ、パラメータ、ステータス、エラー内容、参照ファイル等）。
+   - `latest_run.txt`: 直近の成功実行ディレクトリ（Neo4j エクスポートや評価の既定入力に利用）。
+- `log/`: Oasis / CAMEL-OASIS が出力した各種ログファイル。
+- `data/neo4j/`: Docker Compose で起動した Neo4j のデータ・ログ・プラグインディレクトリ。自動生成されるため手動編集は不要。
 
 ### 検討する推薦アルゴリズム
 本研究では、以下のアルゴリズムによる社会動態の違いを比較検証する。
@@ -94,16 +107,24 @@ AIエージェントを用いる理由は以下の二点である。
 - **Modularity**: エージェント間の「いいね」やフォロー関係からグラフを構築し、コミュニティの分断度合いを測る。
 - **Echo Chamber Score**: 自分と似た意見のコンテンツに接触した割合 vs 異なる意見に接触した割合。
 
-## フォルダ構成 (予定)
+## フォルダ構成
 ```text
 .
-├── data
-├── main.py
-├── pyproject.toml
+├── data/
+│   ├── persona/
+│   └── neo4j/               # Docker Compose による Neo4j の永続化領域
+├── log/                     # OASIS ランタイムのログ
+├── results/                 # 実験ごとの成果物とサマリーファイル
+├── src/
+│   ├── agents/              # ペルソナ読み込み・エージェント生成
+│   ├── algorithms/          # 分析・モデレーション関連アルゴリズム
+│   ├── evaluation/          # グラフ指標計算などの評価ツール
+│   ├── simulation/          # シミュレーションのエントリポイント
+│   └── visualization/       # Neo4j エクスポート他
+├── main.py                  # CLI ラッパー（実験管理・アーティファクト保存）
+├── pyproject.toml / uv.lock # 依存関係管理
+├── docker-compose.yml       # Neo4j スタック定義
+├── .mise.toml               # mise タスク定義
 ├── README.md
-└── src
-    ├── agents
-    ├── algorithms
-    ├── simulation
-    └── utils
+└── ...
 ```
