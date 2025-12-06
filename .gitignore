@@ -7,3 +7,4 @@ uv.lock
 .DS_Store
 notebooks/log/
 data/
+results/
