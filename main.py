@@ -209,6 +209,23 @@ def main() -> None:
         default=1,
         help="How many rounds of LLM-driven actions to execute after seeding posts.",
     )
+    parser.add_argument(
+        "--seeding-path",
+        default="data/seeding.json",
+        help="Path to the seeding JSON file containing initial post contents.",
+    )
+    parser.add_argument(
+        "--agent-action-ratio",
+        type=float,
+        default=0.3,
+        help="Ratio of agents (0.0-1.0) to randomly select for each LLM round. Default is 0.3 (30%%).",
+    )
+    parser.add_argument(
+        "--recommendation-type",
+        default="random",
+        choices=["random", "collaborative", "bridging", "diversity", "echo_chamber", "hybrid"],
+        help="Type of recommendation algorithm to use for content moderation.",
+    )
 
     args = parser.parse_args()
 
@@ -246,8 +263,11 @@ def main() -> None:
         run(
             persona_path=persona_path,
             database_path=database_path,
+            seeding_path=Path(args.seeding_path),
             seed_post_count=args.seed_post_count,
             llm_rounds=args.llm_rounds,
+            agent_action_ratio=args.agent_action_ratio,
+            recommendation_type=args.recommendation_type,
         )
     except Exception as exc:  # noqa: BLE001 - capture all errors for metadata recording
         status = "failed"
@@ -261,8 +281,11 @@ def main() -> None:
             "timestamp": timestamp,
             "persona_path": str(persona_path.resolve()),
             "persona_copy": str(persona_copy.resolve()) if persona_copy else None,
+            "seeding_path": str(Path(args.seeding_path).resolve()),
             "seed_post_count": args.seed_post_count,
             "llm_rounds": args.llm_rounds,
+            "agent_action_ratio": args.agent_action_ratio,
+            "recommendation_type": args.recommendation_type,
             "database_path": str(resolved_database),
             "note": args.note or "",
             "status": status,

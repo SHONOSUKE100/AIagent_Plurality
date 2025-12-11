@@ -19,9 +19,10 @@ AIエージェントを用いる理由は以下の二点である。
 ### 実験プロセス
 1. **初期化 (Initialization)**: 
    - 100体のエージェントを生成。各エージェントには異なるバックグラウンドと初期意見ベクトルを持たせる。
-2. **初期投稿 (Cold Start)**: 
-   - 他者の影響を受けていない状態で、各エージェントが数件の投稿を行う。
+2. **初期投稿 (Seeding)**: 
+   - `data/seeding.json` に定義されたシードデータを使用して、ランダムに選択されたエージェントが初期投稿を行う。これにより議論のトピックを設定する。
 3. **インタラクションループ (Interaction Loop)**: 
+   - 各ラウンドでは、全エージェントではなく `--agent-action-ratio` で指定された割合（デフォルト30%）のエージェントがランダムに選択されて行動する。
    - **推薦 (Recommendation)**: 実験対象のアルゴリズムに基づき、各エージェントにタイムライン（投稿リスト）を提示。
    - **反応 (Reaction)**: エージェントは提示された投稿に対し、閲覧・Like・コメント・無視などの行動を選択する。
    - **意見変容 (Update)**: 接触した情報に基づき、エージェントの内部状態（意見）を更新する。
@@ -52,6 +53,41 @@ AIエージェントを用いる理由は以下の二点である。
    uv run main.py --persona-path data/persona/persona.json --seed-post-count 20 --llm-rounds 1
    ```
    実行結果は `results/<timestamp>/` 以下に保存され、`simulation.db`、`metadata.yaml`、使用ペルソナのコピー、設定ファイルのスナップショット（`config/` 配下）などが生成される。実行ログは `results/index.csv` と `results/latest_run.txt` に追記される。
+
+   **主要なオプション:**
+   | オプション | デフォルト | 説明 |
+   |-----------|-----------|------|
+   | `--persona-path` | `data/persona/persona.json` | ペルソナJSONファイルのパス |
+   | `--seeding-path` | `data/seeding.json` | 初期投稿用シードデータのJSONファイルパス |
+   | `--seed-post-count` | `20` | 初期投稿の数 |
+   | `--llm-rounds` | `1` | LLMによるアクションラウンド数 |
+   | `--agent-action-ratio` | `0.3` | 各LLMラウンドで行動するエージェントの割合（0.0〜1.0） |
+   | `--recommendation-type` | `random` | コンテンツ推薦アルゴリズムの種類（下記参照） |
+
+   **推薦アルゴリズムの種類:**
+   | タイプ | 説明 |
+   |--------|------|
+   | `random` | ランダム推薦（ベースライン） |
+   | `collaborative` | 協調フィルタリング（類似ユーザーの行動に基づく） |
+   | `bridging` | 分断修復型（異なる意見クラスター間をつなぐコンテンツを優先） |
+   | `diversity` | 多様性最大化（様々なトピックやビューポイントをカバー） |
+   | `echo_chamber` | エコーチェンバー促進（研究用：意図的にエコーチェンバーを作成） |
+   | `hybrid` | ハイブリッド（複数のアルゴリズムを組み合わせ） |
+
+   **使用例:**
+   ```bash
+   # 50%のエージェントが各ラウンドで行動
+   uv run main.py --agent-action-ratio 0.5 --llm-rounds 3
+
+   # カスタムシードファイルを使用
+   uv run main.py --seeding-path data/custom_seeding.json
+
+   # 分断修復型アルゴリズムでシミュレーション
+   uv run main.py --recommendation-type bridging --llm-rounds 5
+
+   # エコーチェンバー効果を研究
+   uv run main.py --recommendation-type echo_chamber --llm-rounds 10
+   ```
 - Neo4j に可視化用のノード・エッジを投入する。
    ```bash
    uv run src/visualization/neo4j_export.py --neo4j-password neo4j1234
@@ -82,16 +118,37 @@ AIエージェントを用いる理由は以下の二点である。
 - `data/neo4j/`: Docker Compose で起動した Neo4j のデータ・ログ・プラグインディレクトリ。自動生成されるため手動編集は不要。
 
 ### 検討する推薦アルゴリズム
-本研究では、以下のアルゴリズムによる社会動態の違いを比較検証する。
+本研究では、以下のアルゴリズムによる社会動態の違いを比較検証する。`--recommendation-type` オプションで指定可能。
 
-1. **ランダム (Random)**: 
+1. **ランダム (random)**: 
    - ベースライン。無作為にコンテンツを提示。
-2. **協調フィルタリング (Collaborative Filtering)**: 
-   - 類似した嗜好を持つユーザーの行動履歴に基づく推薦。エコーチェンバーを促進する可能性がある。
-3. **Bridging-Based (分断修復型)**: 
+   - 実装: `RandomRecommender`
+   
+2. **協調フィルタリング (collaborative)**: 
+   - 類似した嗜好を持つユーザーの行動履歴に基づく推薦。
+   - ユーザーの埋め込みベクトルや意見ベクトルの類似度で近いユーザーを特定し、そのユーザーがいいねした投稿を推薦。
+   - エコーチェンバーを促進する可能性がある。
+   - 実装: `CollaborativeFilteringRecommender`
+   
+3. **分断修復型 (bridging)**: 
    - 異なる意見クラスター間をつなぐ（両者から支持される）コンテンツを優先的に提示。
-4. **LLMによる情報提供 (LLM-driven)**: 
-   - エージェントの視野を広げるよう、LLMが動的にコンテンツを選定・生成して提示。
+   - 異なる意見を持つユーザーから支持を得ている投稿を高スコア化。
+   - 実装: `BridgingRecommender`
+   
+4. **多様性最大化 (diversity)**: 
+   - 推薦リスト内のコンテンツ多様性を最大化。
+   - 貪欲法で、既に選択されたコンテンツと異なる内容を優先的に選択。
+   - 実装: `DiversityRecommender`
+   
+5. **エコーチェンバー促進 (echo_chamber)**: 
+   - 研究用。意図的にエコーチェンバーを形成するアルゴリズム。
+   - ユーザーの意見に強く一致するコンテンツを優先推薦。
+   - 実装: `EchoChamberRecommender`
+   
+6. **ハイブリッド (hybrid)**: 
+   - 複数のアルゴリズム（協調フィルタリング、分断修復、多様性、ランダム）を組み合わせ。
+   - 各アルゴリズムの重みを調整可能。
+   - 実装: `HybridRecommender`
 
 ## 評価指標
 
@@ -111,13 +168,15 @@ AIエージェントを用いる理由は以下の二点である。
 ```text
 .
 ├── data/
-│   ├── persona/
+│   ├── persona/             # エージェントのペルソナ定義
+│   ├── seeding.json         # 初期投稿用シードデータ
 │   └── neo4j/               # Docker Compose による Neo4j の永続化領域
 ├── log/                     # OASIS ランタイムのログ
 ├── results/                 # 実験ごとの成果物とサマリーファイル
 ├── src/
 │   ├── agents/              # ペルソナ読み込み・エージェント生成
-│   ├── algorithms/          # 分析・モデレーション関連アルゴリズム
+│   ├── algorithms/          # コンテンツ推薦・モデレーションアルゴリズム
+│   │   └── contents_moderation.py  # 6種類の推薦アルゴリズム実装
 │   ├── evaluation/          # グラフ指標計算などの評価ツール
 │   ├── simulation/          # シミュレーションのエントリポイント
 │   └── visualization/       # Neo4j エクスポート他
