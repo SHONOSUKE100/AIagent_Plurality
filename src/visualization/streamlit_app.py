@@ -40,7 +40,7 @@ def _connect(db_path: str) -> sqlite3.Connection:
 def _default_db_path() -> Path:
     if LATEST_RUN_FILE.exists():
         try:
-            latest_dir = Path(LATEST_RUN_FILE.read_text().strip())
+            latest_dir = Path(LATEST_RUN_FILE.read_text(encoding="utf-8").strip())
             candidate = latest_dir / "simulation.db"
             if candidate.exists():
                 return candidate

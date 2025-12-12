@@ -7,8 +7,8 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-from src.evaluation.graph_base import calculate_modularity, compute_basic_metrics
-from src.evaluation.graph_data import load_like_graph_from_connection
+from graph_base import calculate_modularity, compute_basic_metrics
+from graph_data import load_like_graph_from_connection
 
 
 LATEST_RUN_FILE = Path("results/latest_run.txt")
@@ -36,7 +36,7 @@ def resolve_sqlite_path(sqlite_path: str | None, run_dir: str | None) -> Path:
     if run_dir:
         return Path(run_dir) / "simulation.db"
     if LATEST_RUN_FILE.exists():
-        latest_dir = Path(LATEST_RUN_FILE.read_text().strip())
+        latest_dir = Path(LATEST_RUN_FILE.read_text(encoding="utf-8").strip())
         candidate = latest_dir / "simulation.db"
         if candidate.exists():
             return candidate
