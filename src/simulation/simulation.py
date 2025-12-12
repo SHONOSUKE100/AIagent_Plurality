@@ -90,6 +90,7 @@ async def _seed_posts(env, seeding_data: list[dict], seed_post_count: int) -> No
     """Create initial posts using seeding data.
     
     Each seeding post is assigned to a random agent who will create that post.
+    After seeding, agent memories are cleared to prevent tool_calls state issues.
     """
     agent_items = list(env.agent_graph.get_agents())
     if not agent_items or not seeding_data:
@@ -104,6 +105,7 @@ async def _seed_posts(env, seeding_data: list[dict], seed_post_count: int) -> No
     selected_seeds = random.sample(seeding_data, actual_count)
 
     actions = {}
+    seeded_agents = []
     for (agent_id, agent), seed in zip(selected_agents, selected_seeds):
         content = seed.get("content", "")
         if content:
@@ -115,9 +117,19 @@ async def _seed_posts(env, seeding_data: list[dict], seed_post_count: int) -> No
                     },
                 )
             ]
+            seeded_agents.append(agent)
 
     if actions:
         await env.step(actions)
+        
+        # Clear memory for seeded agents to prevent tool_calls state corruption
+        # This fixes the OpenAI error: "An assistant message with 'tool_calls' 
+        # must be followed by tool messages responding to each 'tool_call_id'"
+        for agent in seeded_agents:
+            try:
+                agent.memory.clear()
+            except Exception:
+                pass  # Ignore if memory clearing fails
 
 
 async def _llm_round(
@@ -125,6 +137,7 @@ async def _llm_round(
     agent_action_ratio: float = 0.3,
     recommender = None,
     round_num: int = 0,
+    clear_memory_before_action: bool = True,
 ) -> None:
     """Execute one LLM round with a random subset of agents.
     
@@ -133,6 +146,8 @@ async def _llm_round(
         agent_action_ratio: Ratio of agents (0.0-1.0) to randomly select for this round.
         recommender: Optional custom recommender for content moderation.
         round_num: Current round number (for logging/debugging).
+        clear_memory_before_action: Whether to clear agent memory before LLM action
+            to prevent tool_calls state corruption.
     """
     agent_items = list(env.agent_graph.get_agents())
     if not agent_items:
@@ -147,6 +162,14 @@ async def _llm_round(
     
     # Log the round info
     print(f"Round {round_num + 1}: {num_to_select}/{len(agent_items)} agents selected ({agent_action_ratio*100:.0f}%)")
+    
+    # Clear memory for selected agents to prevent tool_calls state issues
+    if clear_memory_before_action:
+        for _, agent in selected_agents:
+            try:
+                agent.memory.clear()
+            except Exception:
+                pass  # Ignore if memory clearing fails
     
     actions = {
         agent: LLMAction()
