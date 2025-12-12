@@ -9,4 +9,7 @@ dependencies = [
     "neo4j>=5.22.0",
     "networkx>=3.3",
     "pyyaml>=6.0.1",
+    "pandas==2.2.2",
+    "plotly>=5.24.1",
+    "streamlit>=1.40.0",
 ]

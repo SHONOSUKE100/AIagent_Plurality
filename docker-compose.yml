@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   neo4j:
-    image: neo4j:5.21
+    image: neo4j:latest
     container_name: aiagent-neo4j
     restart: unless-stopped
     ports:
@@ -14,3 +14,16 @@ services:
       - ./data/neo4j/data:/data
       - ./data/neo4j/logs:/logs
       - ./data/neo4j/plugins:/plugins
+
+  neodash:
+    image: neo4jlabs/neodash:2.4.11
+    platform: linux/amd64
+    container_name: aiagent-neodash
+    restart: unless-stopped
+    ports:
+      - "5005:5005"
+    environment:
+      ssoEnabled: "false"
+      standalone: "false"
+    depends_on:
+      - neo4j

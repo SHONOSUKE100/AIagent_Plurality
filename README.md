@@ -93,11 +93,96 @@ AIエージェントを用いる理由は以下の二点である。
    uv run src/visualization/neo4j_export.py --neo4j-password neo4j1234
    ```
    `results/latest_run.txt` のディレクトリから `simulation.db` を読み込み、Neo4j を上書きする。完了後は同ディレクトリに `graph.graphml` と `neo4j_export.yaml` が生成される。Neo4j Browser で `MATCH (n) RETURN n LIMIT 200;` などを実行するとネットワークを確認できる。
+
+### Streamlit ダッシュボード（Neo4j不要・簡易可視化）
+Neo4j を経由せず、生成された SQLite (`simulation.db`) を直接読み込んで可視化する簡易ダッシュボード。
+
+```bash
+# 推奨: uv 経由で実行
+uv run streamlit run src/visualization/streamlit_app.py
+
+# もしくは仮想環境を有効化した状態で
+streamlit run src/visualization/streamlit_app.py
+```
+
+- デフォルトの DB パスは `results/latest_run.txt` が指す最新実行の `simulation.db`。サイドバーで任意パスに変更可。
+- 表示内容: 概要指標（ユーザー・ポスト・コメント・フォロー・いいね）、評価指標（密度/平均クラスタ係数/トランジティビティ/最短経路長/モジュラリティ）、最新ポストとコメント一覧、フォロー関係グラフ、ユーザー×ポストいいね関係グラフ、フォロワー上位ユーザー一覧。
+- 以前の `python streamlit_app.py` 形式はコンテキスト警告が出るため、必ず `streamlit run ...` を使用してください。
+
+### Neo4j Browser による可視化（推奨）
+Neo4j Browser を使用してシミュレーション結果をグラフとして可視化・分析できる。
+
+1. Neo4j を起動する。
+   ```bash
+   docker compose up neo4j -d
+   ```
+
+2. シミュレーション実行後、Neo4j にデータをエクスポートする。
+   ```bash
+   uv run src/visualization/neo4j_export.py --neo4j-password neo4j1234
+   ```
+
+3. ブラウザで http://localhost:7474 にアクセスする。
+   - 認証情報: `neo4j` / `neo4j1234`
+
+4. `data/neo4j_queries.cypher` に定義された分析クエリを実行する。
+
+**主要な分析クエリ:**
+| カテゴリ | 内容 |
+|----------|------|
+| 基本統計 | ユーザー数、投稿数、コメント数、いいね数 |
+| ユーザー分析 | 職業別・地域別・年齢別分布 |
+| 投稿分析 | いいね数ランキング、コメント数ランキング |
+| ネットワーク分析 | ソーシャルネットワーク全体図、ユーザー間インタラクション |
+| エコーチェンバー分析 | 同職業/異職業間いいね、孤立ユーザー、相互いいねペア |
+| 行動ログ | 行動タイプ分布、ユーザー別行動数 |
+
+**クエリ例（Neo4j Browser で実行）:**
+```cypher
+// ソーシャルネットワーク全体図
+MATCH (u:User)-[r:LIKED|POSTED|WROTE_COMMENT]->(target)
+RETURN u, r, target LIMIT 200;
+
+// エコーチェンバー分析: 同職業間 vs 異職業間いいね
+MATCH (liker:User)-[:LIKED]->(p:Post)<-[:POSTED]-(poster:User)
+WHERE liker.occupation IS NOT NULL AND poster.occupation IS NOT NULL
+WITH liker.occupation = poster.occupation AS same_occupation, count(*) AS likes
+RETURN 
+  CASE same_occupation WHEN true THEN '同職業間' ELSE '異職業間' END AS category,
+  likes;
+```
+
+### NeoDash ダッシュボード（オプション）
+NeoDash を使用することで、カスタムダッシュボードでシミュレーション結果を可視化できる。
+> **Note:** Apple Silicon Mac では動作が不安定な場合があります。その場合は Neo4j Browser を使用してください。
+
+1. Neo4j と NeoDash を起動する。
+   ```bash
+   docker compose up neo4j neodash -d
+   ```
+
+2. シミュレーション実行後、Neo4j にデータをエクスポートする。
+   ```bash
+   uv run src/visualization/neo4j_export.py
+   ```
+
+3. 事前定義のダッシュボードをインポートする。
+   ```bash
+   uv run src/visualization/neodash_import.py
+   ```
+
+4. ブラウザで http://localhost:5005 にアクセスする。
+   - 接続情報を入力：Protocol `neo4j://`、Host `localhost`、Port `7687`、Username `neo4j`、Password `neo4j1234`
+   - 接続後「Load」→「Load from Neo4j」をクリック
+
 - よく使うコマンドは [mise](https://mise.jdx.dev/) のタスクからも実行できる。
    ```bash
    mise run simulation
    mise run neo4j-up
    mise run neo4j-export
+   mise run neodash-up
+   mise run neodash-import
+   mise run dashboard-up  # Neo4j + NeoDash + ダッシュボードインポートを一括実行
    mise run evaluate
    ```
    追加引数は `mise run simulation -- --seed-post-count 50 --llm-rounds 5` のように `--` 以降へ渡すか、`mise run simulation seed_post_count=50` のようにテンプレート変数として指定できる。

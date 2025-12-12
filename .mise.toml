@@ -10,5 +10,18 @@ run = "docker compose down"
 [tasks.neo4j-export]
 run = "uv run src/visualization/neo4j_export.py --neo4j-password {{ neo4j_password | default(value=\"neo4j1234\") }}"
 
+[tasks.neodash-up]
+run = "docker compose up neodash -d"
+description = "Start NeoDash dashboard (requires neo4j to be running)"
+
+[tasks.neodash-import]
+run = "uv run src/visualization/neodash_import.py --neo4j-password {{ neo4j_password | default(value=\"neo4j1234\") }}"
+description = "Import pre-configured dashboard into Neo4j"
+
+[tasks.dashboard-up]
+run = "docker compose up neo4j neodash -d && sleep 5 && uv run src/visualization/neodash_import.py"
+description = "Start Neo4j + NeoDash and import dashboard"
+
 [tasks.evaluate]
 run = "uv run src/evaluation/main.py"
+

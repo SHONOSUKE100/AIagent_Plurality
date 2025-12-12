@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, List, Mapping, Tuple
@@ -13,8 +14,12 @@ import networkx as nx
 import yaml
 from neo4j import GraphDatabase, basic_auth
 
-from src.evaluation.graph_data import load_like_graph
+# Add project root to path for direct script execution
+_project_root = Path(__file__).resolve().parent.parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
+from src.evaluation.graph_data import load_like_graph
 
 LATEST_RUN_FILE = Path("results/latest_run.txt")
 
