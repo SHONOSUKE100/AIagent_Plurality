@@ -12,10 +12,12 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import networkx as nx
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
+from networkx.algorithms.community import greedy_modularity_communities
 
 # Ensure project root is on the path when running via `streamlit run`
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -120,26 +122,33 @@ def load_top_users(conn: sqlite3.Connection, limit: int = 15) -> pd.DataFrame:
     return fetch_df(conn, query, params=[limit])
 
 
-def build_follow_graph(conn: sqlite3.Connection, user_limit: int = 40) -> nx.DiGraph:
-    users = load_top_users(conn, user_limit)
+def build_follow_graph(conn: sqlite3.Connection) -> nx.DiGraph:
+    """Build a follow graph with all users."""
+
+    users = fetch_df(
+        conn,
+        """
+        SELECT user_id, user_name, num_followers, num_followings
+        FROM user
+        """,
+    )
     if users.empty:
         return nx.DiGraph()
 
-    user_ids = users["user_id"].tolist()
-    placeholders = ",".join(["?"] * len(user_ids))
-    edge_query = f"""
+    edges = fetch_df(
+        conn,
+        """
         SELECT follower_id, followee_id
         FROM follow
-        WHERE follower_id IN ({placeholders})
-          AND followee_id IN ({placeholders})
-    """
-    edges = fetch_df(conn, edge_query, params=user_ids + user_ids)
+        """,
+    )
 
     graph = nx.DiGraph()
     for _, row in users.iterrows():
         graph.add_node(
             int(row["user_id"]),
             label=row["user_name"],
+            kind="user",
             followers=int(row["num_followers"]),
             followings=int(row["num_followings"]),
         )
@@ -199,6 +208,103 @@ def build_like_graph(conn: sqlite3.Connection, post_limit: int = 25, edge_limit:
     return graph
 
 
+def build_engagement_graph(
+    conn: sqlite3.Connection,
+    post_limit: int = 15,
+    like_limit: int = 400,
+    comment_limit: int = 150,
+) -> nx.Graph:
+    """Build a heterogeneous graph of users, posts, and comments."""
+
+    posts = fetch_df(
+        conn,
+        """
+        SELECT post_id, user_id AS author_id, content
+        FROM post
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        params=[post_limit],
+    )
+    if posts.empty:
+        return nx.Graph()
+
+    post_ids = posts["post_id"].tolist()
+    placeholders = ",".join(["?"] * len(post_ids))
+
+    comments = fetch_df(
+        conn,
+        f"""
+        SELECT comment_id, post_id, user_id AS author_id, content
+        FROM comment
+        WHERE post_id IN ({placeholders})
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        params=post_ids + [comment_limit],
+    )
+
+    likes = fetch_df(
+        conn,
+        f"""
+        SELECT user_id, post_id
+        FROM like
+        WHERE post_id IN ({placeholders})
+        LIMIT ?
+        """,
+        params=post_ids + [like_limit],
+    )
+
+    comment_likes = pd.DataFrame()
+    if not comments.empty:
+        comment_ids = comments["comment_id"].tolist()
+        placeholders_comments = ",".join(["?"] * len(comment_ids))
+        comment_likes = fetch_df(
+            conn,
+            f"""
+            SELECT user_id, comment_id
+            FROM comment_like
+            WHERE comment_id IN ({placeholders_comments})
+            LIMIT ?
+            """,
+            params=comment_ids + [like_limit],
+        )
+
+    graph = nx.Graph()
+
+    # Posts
+    for _, row in posts.iterrows():
+        label = row["content"][:40] + ("..." if len(row["content"]) > 40 else "")
+        graph.add_node(int(row["post_id"]), kind="post", label=label)
+        graph.add_node(int(row["author_id"]), kind="user")
+        graph.add_edge(int(row["author_id"]), int(row["post_id"]))  # authored
+
+    # Comments
+    for _, row in comments.iterrows():
+        cid = int(row["comment_id"])
+        pid = int(row["post_id"])
+        author = int(row["author_id"])
+        graph.add_node(cid, kind="comment")
+        graph.add_node(author, kind="user")
+        graph.add_edge(author, cid)  # wrote comment
+        graph.add_edge(cid, pid)  # on post
+
+    # Likes on posts
+    for _, row in likes.iterrows():
+        graph.add_node(int(row["user_id"]), kind="user")
+        graph.add_node(int(row["post_id"]), kind="post")
+        graph.add_edge(int(row["user_id"]), int(row["post_id"]))
+
+    # Likes on comments
+    if not comment_likes.empty:
+        for _, row in comment_likes.iterrows():
+            graph.add_node(int(row["user_id"]), kind="user")
+            graph.add_node(int(row["comment_id"]), kind="comment")
+            graph.add_edge(int(row["user_id"]), int(row["comment_id"]))
+
+    return graph
+
+
 def _spread_positions(n: int) -> List[float]:
     if n <= 1:
         return [0.0]
@@ -206,7 +312,15 @@ def _spread_positions(n: int) -> List[float]:
     return [-1 + i * step for i in range(n)]
 
 
-def plot_network(graph: nx.Graph, title: str, color_map: dict[str, str] | None = None) -> go.Figure | None:
+def plot_network(
+    graph: nx.Graph,
+    title: str,
+    color_map: dict[str, str] | None = None,
+    node_color_override: dict[int, str] | None = None,
+    legend_handles: list[mpatches.Patch] | None = None,
+):
+    """Draw the network using matplotlib (bipartite layout if provided)."""
+
     if not graph.nodes:
         return None
 
@@ -216,68 +330,54 @@ def plot_network(graph: nx.Graph, title: str, color_map: dict[str, str] | None =
     else:
         pos = nx.spring_layout(graph, seed=42, k=0.6)
 
-    edge_x: List[float] = []
-    edge_y: List[float] = []
-    for src, dst in graph.edges():
-        x0, y0 = pos[src]
-        x1, y1 = pos[dst]
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.set_title(title, fontsize=12)
+    ax.axis("off")
 
-    edge_trace = go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        line=dict(width=0.8, color="#BBBBBB"),
-        hoverinfo="none",
-        mode="lines",
+    # Edges
+    nx.draw_networkx_edges(
+        graph,
+        pos,
+        alpha=0.35,
+        width=1.0,
+        edge_color="#9ca3af",
+        ax=ax,
     )
 
-    node_x: List[float] = []
-    node_y: List[float] = []
-    texts: List[str] = []
-    hovers: List[str] = []
-    colors: List[str] = []
-    sizes: List[float] = []
-
+    # Nodes: color by kind if provided, else default
+    default_color = "#2563eb"
+    node_colors = []
     for node, data in graph.nodes(data=True):
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-        label = str(data.get("label", node))
-        texts.append(label)
-        hovers.append(label)
+        if node_color_override and node in node_color_override:
+            node_colors.append(node_color_override[node])
+            continue
         kind = data.get("kind")
-        colors.append((color_map or {}).get(kind, "#228be6"))
-        sizes.append(12 + 2 * graph.degree[node])
+        node_colors.append((color_map or {}).get(kind, default_color))
 
-    node_trace = go.Scatter(
-        x=node_x,
-        y=node_y,
-        mode="markers+text",
-        text=texts,
-        textposition="top center",
-        hovertext=hovers,
-        marker=dict(
-            size=sizes,
-            color=colors,
-            line=dict(width=0.5, color="#333333"),
-            opacity=0.85,
-        ),
-        hoverinfo="text",
+    node_sizes = [180 + 20 * graph.degree[n] for n in graph.nodes()]
+    # Draw nodes only (no labels to avoid clutter)
+    nx.draw_networkx_nodes(
+        graph,
+        pos,
+        node_size=node_sizes,
+        node_color=node_colors,
+        linewidths=0.5,
+        edgecolors="#111827",
+        alpha=0.9,
+        ax=ax,
     )
 
-    fig = go.Figure(data=[edge_trace, node_trace])
-    fig.update_layout(
-        title=title,
-        showlegend=False,
-        hovermode="closest",
-        margin=dict(l=10, r=10, t=40, b=10),
-        paper_bgcolor="#0f1116",
-        plot_bgcolor="#0f1116",
-        font=dict(color="#e5e7eb"),
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
-    )
+    combined_legend = list(legend_handles or [])
+    if color_map:
+        kinds_in_graph = {data.get("kind") for _, data in graph.nodes(data=True)}
+        for kind, color in color_map.items():
+            if kind in kinds_in_graph:
+                label = str(kind) if kind is not None else "node"
+                combined_legend.append(mpatches.Patch(color=color, label=label))
+    if combined_legend:
+        ax.legend(handles=combined_legend, loc="upper right", frameon=False, fontsize=8)
+
+    fig.tight_layout()
     return fig
 
 
@@ -351,7 +451,7 @@ def render_follow_graph(conn: sqlite3.Connection) -> None:
     graph = build_follow_graph(conn)
     fig = plot_network(graph, "Follow network", color_map={None: "#22c55e", "user": "#22c55e"})
     if fig:
-        st.plotly_chart(fig, width="stretch")
+        st.pyplot(fig, use_container_width=True)
     else:
         st.info("フォロー関係が見つかりませんでした。")
 
@@ -361,9 +461,60 @@ def render_like_graph(conn: sqlite3.Connection) -> None:
     graph = build_like_graph(conn)
     fig = plot_network(graph, "User-Post likes", color_map={"user": "#38bdf8", "post": "#f97316"})
     if fig:
-        st.plotly_chart(fig, width="stretch")
+        st.pyplot(fig, use_container_width=True)
     else:
         st.info("いいね情報が見つかりませんでした。")
+
+
+def render_engagement_graph(conn: sqlite3.Connection) -> None:
+    st.subheader("ユーザー・ポスト・コメントの関係")
+    graph = build_engagement_graph(conn)
+    fig = plot_network(
+        graph,
+        "Engagement network",
+        color_map={"user": "#38bdf8", "post": "#f97316", "comment": "#22c55e"},
+    )
+    if fig:
+        st.pyplot(fig, use_container_width=True)
+    else:
+        st.info("十分なデータがありません。")
+
+
+def render_echo_chamber_graph(conn: sqlite3.Connection) -> None:
+    st.subheader("エコーチェンバー可視化（いいねネットワークのクラスター）")
+    nodes, edges = load_like_graph_from_connection(conn)
+    if not nodes or not edges:
+        st.info("十分なデータがありません。")
+        return
+
+    g = nx.Graph()
+    g.add_nodes_from(nodes)
+    g.add_weighted_edges_from(edges)
+
+    communities = list(greedy_modularity_communities(g))
+    if not communities:
+        st.info("クラスターを検出できませんでした。")
+        return
+
+    # Assign community colors
+    cmap = plt.get_cmap("tab20")
+    color_lookup: dict[int, str] = {}
+    legend_handles: list[mpatches.Patch] = []
+    for idx, comm in enumerate(communities):
+        color = cmap(idx % cmap.N)
+        for node in comm:
+            color_lookup[int(node)] = color
+        legend_handles.append(mpatches.Patch(color=color, label=f"cluster {idx+1}"))
+
+    fig = plot_network(
+        g,
+        "Like network clusters",
+        color_map={"user": "#38bdf8"},
+        node_color_override=color_lookup,
+        legend_handles=legend_handles,
+    )
+    if fig:
+        st.pyplot(fig, use_container_width=True)
 
 
 def render_top_users(conn: sqlite3.Connection) -> None:
@@ -405,6 +556,8 @@ def main() -> None:
 
     render_follow_graph(conn)
     render_like_graph(conn)
+    render_engagement_graph(conn)
+    render_echo_chamber_graph(conn)
 
 
 if __name__ == "__main__":
