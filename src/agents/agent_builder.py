@@ -143,23 +143,45 @@ def load_personas(profile_path: Path | str) -> List[Persona]:
 
 def create_default_model(
     *,
-    temperature: float = 0.0,
-    model_type: ModelType = ModelType.GPT_4O,
+    temperature: float | None = 0.0,
+    model_type: ModelType | str = ModelType.GPT_4O,
     model_platform: ModelPlatformType = ModelPlatformType.OPENAI,
     model_config_dict: Mapping[str, object] | None = None,
     rate_limit_config: Mapping[str, object] | None = None,
 ):
     """Instantiate the default CAMEL model with rate-limit aware wrapper."""
 
-    config = {"temperature": temperature}
+    # Derive temperature with safeguards for models that only accept defaults.
+    env_temp = os.getenv("OPENAI_MODEL_TEMPERATURE")
+    if env_temp:
+        try:
+            temperature = float(env_temp)
+        except ValueError:
+            pass
+
+    # Some bleeding-edge models (e.g., gpt-5-nano) reject explicit temperature.
+    if isinstance(model_type, str) and "gpt-5-nano" in model_type:
+        temperature = None
+
+    config: dict[str, object] = {}
+    if temperature is not None:
+        config["temperature"] = temperature
     if model_config_dict:
         config.update(model_config_dict)
 
-    base_model = ModelFactory.create(
-        model_platform=model_platform,
-        model_type=model_type,
-        model_config_dict=config,
-    )
+    # Allow raw string for custom/bleeding-edge models (e.g., gpt5-nano).
+    if isinstance(model_type, str):
+        base_model = ModelFactory.create(
+            model_platform=model_platform,
+            model_type=model_type,
+            model_config_dict=config,
+        )
+    else:
+        base_model = ModelFactory.create(
+            model_platform=model_platform,
+            model_type=model_type,
+            model_config_dict=config,
+        )
 
     retry_config = {
         "max_retries": int(os.getenv("OPENAI_RATE_LIMIT_MAX_RETRIES", "5")),

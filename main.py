@@ -226,6 +226,17 @@ def main() -> None:
         choices=["random", "collaborative", "bridging", "diversity", "echo_chamber", "hybrid"],
         help="Type of recommendation algorithm to use for content moderation.",
     )
+    parser.add_argument(
+        "--model-type",
+        default="gpt-4o",
+        help="Model identifier to use (e.g., gpt-4o, gpt-4o-mini, gpt-5-nano).",
+    )
+    parser.add_argument(
+        "--model-temperature",
+        type=float,
+        default=None,
+        help="Optional temperature override. Leave unset to use model defaults (required for some models like gpt-5-nano).",
+    )
 
     args = parser.parse_args()
 
@@ -268,6 +279,8 @@ def main() -> None:
             llm_rounds=args.llm_rounds,
             agent_action_ratio=args.agent_action_ratio,
             recommendation_type=args.recommendation_type,
+            model_type=args.model_type,
+            model_temperature=args.model_temperature,
         )
     except Exception as exc:  # noqa: BLE001 - capture all errors for metadata recording
         status = "failed"

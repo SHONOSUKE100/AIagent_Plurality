@@ -19,6 +19,34 @@ from ..agents.agent_builder import (
     load_personas,
 )
 from ..algorithms import RecommendationType, create_recommender
+from camel.types import ModelType
+from oasis.social_agent.agent import SocialAgent
+
+
+_FAILFAST_INSTALLED = False
+
+
+def _enable_fail_fast_actions() -> None:
+    """Patch SocialAgent to raise when LLM action returns an exception.
+
+    OASIS currently logs and returns exceptions from perform_action_by_llm,
+    which makes the simulation continue silently. We prefer fail-fast: if any
+    agent action errors, bubble up to stop the run.
+    """
+    global _FAILFAST_INSTALLED
+    if _FAILFAST_INSTALLED:
+        return
+
+    original = SocialAgent.perform_action_by_llm
+
+    async def wrapper(self, *args, **kwargs):
+        result = await original(self, *args, **kwargs)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    SocialAgent.perform_action_by_llm = wrapper  # type: ignore[assignment]
+    _FAILFAST_INSTALLED = True
 
 
 def load_seeding_data(seeding_path: Path | str) -> list[dict]:
@@ -51,6 +79,8 @@ async def run_simulation(
     recommendation_type: RecommendationType | str = RecommendationType.RANDOM,
     platform: DefaultPlatformType = DefaultPlatformType.TWITTER,
     available_actions: Sequence[ActionType] | None = None,
+    model_type: str | ModelType = "gpt-4o",
+    model_temperature: float | None = None,
 ) -> None:
     """Run the social simulation once using personas from ``persona_path``.
     
@@ -67,8 +97,9 @@ async def run_simulation(
         available_actions: Available action types for agents.
     """
 
+    _enable_fail_fast_actions()
     personas = load_personas(persona_path)
-    model = create_default_model()
+    model = create_default_model(model_type=model_type, temperature=model_temperature)
     agent_graph = build_agent_graph(personas, model, available_actions=available_actions)
 
     # Load seeding data
@@ -198,6 +229,8 @@ def run(
     llm_rounds: int = 1,
     agent_action_ratio: float = 0.3,
     recommendation_type: RecommendationType | str = RecommendationType.RANDOM,
+    model_type: str | ModelType = "gpt-4o",
+    model_temperature: float | None = None,
 ) -> None:
     """Convenience wrapper that mirrors the notebook execution.
     
@@ -222,5 +255,7 @@ def run(
             agent_action_ratio=agent_action_ratio,
             recommendation_type=recommendation_type,
             available_actions=DEFAULT_AVAILABLE_ACTIONS,
+            model_type=model_type,
+            model_temperature=model_temperature,
         )
     )
