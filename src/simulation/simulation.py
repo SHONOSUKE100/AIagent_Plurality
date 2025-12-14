@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import random
+import sqlite3
 from pathlib import Path
 from typing import Sequence
 
@@ -21,7 +22,11 @@ from ..agents.agent_builder import (
 from ..algorithms import RecommendationType, create_recommender
 from camel.types import ModelType
 from oasis.social_agent.agent import SocialAgent
-from .embedding_store import DEFAULT_EMBEDDING_MODEL, generate_text_embeddings
+from .embedding_store import (
+    DEFAULT_EMBEDDING_MODEL,
+    embed_selected_items,
+    generate_text_embeddings,
+)
 
 
 _FAILFAST_INSTALLED = False
@@ -102,10 +107,21 @@ async def run_simulation(
         embedding_model: Embedding model name to store text vectors.
         embedding_batch_size: Batch size for embedding API calls.
         skip_embeddings: Skip embedding step (useful to avoid API calls).
+
+    Notes:
+        - For non-random recommenders, embeddings are generated incrementally
+          (bios after reset, seeded posts after seeding, and new posts/comments
+          after each round). This keeps recommender inputs fresh.
+        - For the random recommender, embeddings are generated once at the end
+          to minimize API calls.
     """
 
     if embedding_batch_size <= 0:
         raise ValueError("embedding_batch_size must be positive")
+
+    incremental_embeddings = (
+        not skip_embeddings and not _is_random_recommendation(recommendation_type)
+    )
 
     _enable_fail_fast_actions()
     personas = load_personas(persona_path)
@@ -130,9 +146,35 @@ async def run_simulation(
 
     try:
         await env.reset()
+        if incremental_embeddings:
+            await _embed_all_bios(
+                db_path=db_path,
+                model=embedding_model,
+                batch_size=embedding_batch_size,
+            )
+
+        last_post_id = _get_max_id(db_path, "post", "post_id")
         await _seed_posts(env, seeding_data, seed_post_count)
+        if incremental_embeddings:
+            new_posts = _get_new_ids_since(db_path, "post", "post_id", last_post_id)
+            await embed_selected_items(
+                database_path=db_path,
+                post_ids=new_posts,
+                model=embedding_model,
+                batch_size=embedding_batch_size,
+            )
+
         for round_num in range(llm_rounds):
-            await _llm_round(env, agent_action_ratio, recommender, round_num)
+            await _llm_round(
+                env,
+                agent_action_ratio,
+                recommender,
+                round_num,
+                incremental_embeddings=incremental_embeddings,
+                db_path=db_path,
+                embedding_model=embedding_model,
+                embedding_batch_size=embedding_batch_size,
+            )
     finally:
         await env.close()
 
@@ -191,11 +233,15 @@ async def _seed_posts(env, seeding_data: list[dict], seed_post_count: int) -> No
 
 
 async def _llm_round(
-    env, 
+    env,
     agent_action_ratio: float = 0.3,
-    recommender = None,
+    recommender=None,
     round_num: int = 0,
     clear_memory_before_action: bool = True,
+    incremental_embeddings: bool = False,
+    db_path: Path | None = None,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    embedding_batch_size: int = 32,
 ) -> None:
     """Execute one LLM round with a random subset of agents.
     
@@ -206,6 +252,10 @@ async def _llm_round(
         round_num: Current round number (for logging/debugging).
         clear_memory_before_action: Whether to clear agent memory before LLM action
             to prevent tool_calls state corruption.
+        incremental_embeddings: Whether to embed new posts/comments immediately after creation.
+        db_path: SQLite path for embedding writes (required if incremental_embeddings).
+        embedding_model: Embedding model name.
+        embedding_batch_size: Batch size for embedding API calls.
     """
     agent_items = list(env.agent_graph.get_agents())
     if not agent_items:
@@ -229,6 +279,9 @@ async def _llm_round(
             except Exception:
                 pass  # Ignore if memory clearing fails
     
+    prev_post_id = _get_max_id(db_path, "post", "post_id") if incremental_embeddings and db_path else 0
+    prev_comment_id = _get_max_id(db_path, "comment", "comment_id") if incremental_embeddings and db_path else 0
+
     actions = {
         agent: LLMAction()
         for _, agent in selected_agents
@@ -236,6 +289,53 @@ async def _llm_round(
 
     if actions:
         await env.step(actions)
+        if incremental_embeddings and db_path:
+            new_post_ids = _get_new_ids_since(db_path, "post", "post_id", prev_post_id)
+            new_comment_ids = _get_new_ids_since(
+                db_path, "comment", "comment_id", prev_comment_id
+            )
+            await embed_selected_items(
+                database_path=db_path,
+                post_ids=new_post_ids,
+                comment_ids=new_comment_ids,
+                model=embedding_model,
+                batch_size=embedding_batch_size,
+            )
+
+
+def _get_max_id(db_path: Path, table: str, id_column: str) -> int:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(f"SELECT MAX({id_column}) FROM {table}").fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+
+def _get_new_ids_since(
+    db_path: Path, table: str, id_column: str, last_id: int
+) -> list[int]:
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT {id_column} FROM {table} WHERE {id_column} > ? ORDER BY {id_column}",
+            (last_id,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+
+async def _embed_all_bios(db_path: Path, model: str, batch_size: int) -> None:
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT user_id FROM user").fetchall()
+        ids = [int(row[0]) for row in rows]
+    await embed_selected_items(
+        database_path=db_path,
+        user_ids=ids,
+        model=model,
+        batch_size=batch_size,
+    )
+
+
+def _is_random_recommendation(rec_type: RecommendationType | str) -> bool:
+    if isinstance(rec_type, RecommendationType):
+        return rec_type == RecommendationType.RANDOM
+    return str(rec_type).lower() == RecommendationType.RANDOM.value
 
 
 def run(

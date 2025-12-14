@@ -150,6 +150,135 @@ async def _embed_and_store(
     return written
 
 
+def _load_text_items_by_ids(
+    db_path: Path,
+    *,
+    source_table: str,
+    id_column: str,
+    text_column: str,
+    embedding_table: str,
+    model: str,
+    ids: Sequence[int],
+    force: bool,
+) -> list[tuple[int, str]]:
+    """Return (id, text) pairs for explicit ids that need embeddings."""
+
+    if not ids:
+        return []
+
+    unique_ids = sorted({int(x) for x in ids})
+    placeholders = ",".join(["?"] * len(unique_ids))
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        existing: set[int] = set()
+        if not force:
+            rows = conn.execute(
+                f"SELECT {id_column} FROM {embedding_table} WHERE model = ? AND {id_column} IN ({placeholders})",
+                (model, *unique_ids),
+            ).fetchall()
+            existing = {int(row[id_column]) for row in rows}
+
+        rows = conn.execute(
+            f"""
+            SELECT {id_column}, {text_column}
+            FROM {source_table}
+            WHERE {id_column} IN ({placeholders})
+              AND {text_column} IS NOT NULL
+              AND TRIM({text_column}) != ''
+            """,
+            unique_ids,
+        ).fetchall()
+
+    items = []
+    for row in rows:
+        item_id = int(row[id_column])
+        if not force and item_id in existing:
+            continue
+        text = str(row[text_column]).strip()
+        if text:
+            items.append((item_id, text))
+    return items
+
+
+async def embed_selected_items(
+    database_path: Path | str,
+    *,
+    post_ids: Sequence[int] | None = None,
+    comment_ids: Sequence[int] | None = None,
+    user_ids: Sequence[int] | None = None,
+    model: str = DEFAULT_EMBEDDING_MODEL,
+    batch_size: int = 32,
+    force: bool = False,
+) -> None:
+    """Embed only the specified rows (useful for incremental updates)."""
+
+    db_path = Path(database_path)
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database not found: {db_path}")
+
+    _ensure_embedding_tables(db_path)
+
+    post_items = _load_text_items_by_ids(
+        db_path,
+        source_table="post",
+        id_column="post_id",
+        text_column="content",
+        embedding_table="post_embedding",
+        model=model,
+        ids=post_ids or [],
+        force=force,
+    )
+    comment_items = _load_text_items_by_ids(
+        db_path,
+        source_table="comment",
+        id_column="comment_id",
+        text_column="content",
+        embedding_table="comment_embedding",
+        model=model,
+        ids=comment_ids or [],
+        force=force,
+    )
+    bio_items = _load_text_items_by_ids(
+        db_path,
+        source_table="user",
+        id_column="user_id",
+        text_column="bio",
+        embedding_table="user_embedding",
+        model=model,
+        ids=user_ids or [],
+        force=force,
+    )
+
+    await _embed_and_store(
+        db_path,
+        items=post_items,
+        model=model,
+        batch_size=batch_size,
+        table="post_embedding",
+        id_column="post_id",
+        label="post",
+    )
+    await _embed_and_store(
+        db_path,
+        items=comment_items,
+        model=model,
+        batch_size=batch_size,
+        table="comment_embedding",
+        id_column="comment_id",
+        label="comment",
+    )
+    await _embed_and_store(
+        db_path,
+        items=bio_items,
+        model=model,
+        batch_size=batch_size,
+        table="user_embedding",
+        id_column="user_id",
+        label="bio",
+    )
+
+
 async def generate_text_embeddings(
     database_path: Path | str,
     *,

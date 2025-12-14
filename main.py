@@ -290,8 +290,14 @@ def main() -> None:
     error_message: str | None = None
     run_error: Exception | None = None
 
-    effective_embedding_model = args.embedding_model or DEFAULT_EMBEDDING_MODEL
-    skip_embeddings = args.skip_embeddings or not bool(args.embedding_model)
+
+    # Embeddingモデルとスキップ判定のロジックを明確化
+    if args.skip_embeddings or not args.embedding_model:
+        skip_embeddings = True
+        effective_embedding_model = None  # 埋め込み自体をスキップ
+    else:
+        skip_embeddings = False
+        effective_embedding_model = args.embedding_model  # 明示指定のみ利用
 
     try:
         run(
@@ -304,7 +310,7 @@ def main() -> None:
             recommendation_type=args.recommendation_type,
             model_type=args.model_type,
             model_temperature=args.model_temperature,
-            embedding_model=effective_embedding_model,
+            embedding_model=effective_embedding_model or "",
             embedding_batch_size=args.embedding_batch_size,
             skip_embeddings=skip_embeddings,
         )
@@ -326,7 +332,8 @@ def main() -> None:
             "agent_action_ratio": args.agent_action_ratio,
             "recommendation_type": args.recommendation_type,
             "database_path": str(resolved_database),
-            "embedding_model": effective_embedding_model,
+            # skip_embeddingsがTrueならembedding_modelはNoneまたは空文字列
+            "embedding_model": effective_embedding_model if not skip_embeddings else None,
             "embedding_batch_size": args.embedding_batch_size,
             "skip_embeddings": skip_embeddings,
             "note": args.note or "",
@@ -348,6 +355,7 @@ def main() -> None:
             "seed_post_count": metadata["seed_post_count"],
             "llm_rounds": metadata["llm_rounds"],
             "database_path": metadata["database_path"],
+            # skip_embeddingsがTrueならembedding_modelはNoneまたは空文字列
             "embedding_model": metadata["embedding_model"],
             "embedding_batch_size": metadata["embedding_batch_size"],
             "skip_embeddings": metadata["skip_embeddings"],
