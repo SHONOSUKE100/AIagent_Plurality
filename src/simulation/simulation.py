@@ -21,6 +21,7 @@ from ..agents.agent_builder import (
 from ..algorithms import RecommendationType, create_recommender
 from camel.types import ModelType
 from oasis.social_agent.agent import SocialAgent
+from .embedding_store import DEFAULT_EMBEDDING_MODEL, generate_text_embeddings
 
 
 _FAILFAST_INSTALLED = False
@@ -81,6 +82,9 @@ async def run_simulation(
     available_actions: Sequence[ActionType] | None = None,
     model_type: str | ModelType = "gpt-4o",
     model_temperature: float | None = None,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    embedding_batch_size: int = 32,
+    skip_embeddings: bool = False,
 ) -> None:
     """Run the social simulation once using personas from ``persona_path``.
     
@@ -95,7 +99,13 @@ async def run_simulation(
             Options: "random", "collaborative", "bridging", "diversity", "echo_chamber", "hybrid"
         platform: The platform type for the simulation.
         available_actions: Available action types for agents.
+        embedding_model: Embedding model name to store text vectors.
+        embedding_batch_size: Batch size for embedding API calls.
+        skip_embeddings: Skip embedding step (useful to avoid API calls).
     """
+
+    if embedding_batch_size <= 0:
+        raise ValueError("embedding_batch_size must be positive")
 
     _enable_fail_fast_actions()
     personas = load_personas(persona_path)
@@ -125,6 +135,13 @@ async def run_simulation(
             await _llm_round(env, agent_action_ratio, recommender, round_num)
     finally:
         await env.close()
+
+    if not skip_embeddings:
+        await generate_text_embeddings(
+            database_path=db_path,
+            model=embedding_model,
+            batch_size=embedding_batch_size,
+        )
 
 
 async def _seed_posts(env, seeding_data: list[dict], seed_post_count: int) -> None:
@@ -231,6 +248,9 @@ def run(
     recommendation_type: RecommendationType | str = RecommendationType.RANDOM,
     model_type: str | ModelType = "gpt-4o",
     model_temperature: float | None = None,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    embedding_batch_size: int = 32,
+    skip_embeddings: bool = False,
 ) -> None:
     """Convenience wrapper that mirrors the notebook execution.
     
@@ -243,6 +263,9 @@ def run(
         agent_action_ratio: Ratio of agents (0.0-1.0) to randomly select for each LLM round.
         recommendation_type: Type of recommendation algorithm to use.
             Options: "random", "collaborative", "bridging", "diversity", "echo_chamber", "hybrid"
+        embedding_model: Embedding model name to store text vectors.
+        embedding_batch_size: Batch size for embedding API calls.
+        skip_embeddings: Skip embedding step (useful to avoid API calls).
     """
 
     asyncio.run(
@@ -257,5 +280,8 @@ def run(
             available_actions=DEFAULT_AVAILABLE_ACTIONS,
             model_type=model_type,
             model_temperature=model_temperature,
+            embedding_model=embedding_model,
+            embedding_batch_size=embedding_batch_size,
+            skip_embeddings=skip_embeddings,
         )
     )
