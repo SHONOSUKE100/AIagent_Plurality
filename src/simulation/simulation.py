@@ -22,12 +22,22 @@ from ..algorithms import RecommendationType, create_recommender
 
 
 def load_seeding_data(seeding_path: Path | str) -> list[dict]:
-    """Load seeding posts from a JSON file."""
+    """Load seeding posts from a JSON file.
+
+    Raises an explicit error when the path is missing or contains no items so
+    the simulation does not silently run with an empty timeline.
+    """
     path = Path(seeding_path)
     if not path.exists():
-        return []
+        raise FileNotFoundError(f"Seeding file not found: {path}")
+
     with path.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+        data = json.load(fh)
+
+    if not isinstance(data, list) or not data:
+        raise ValueError(f"Seeding file must be a non-empty list: {path}")
+
+    return data
 
 
 async def run_simulation(

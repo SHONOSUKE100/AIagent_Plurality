@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, field
+import os
 from pathlib import Path
 from typing import Iterable, List, Mapping, Sequence
 import json
@@ -12,6 +13,7 @@ from camel.models import ModelFactory
 from camel.prompts import TextPrompt
 from camel.types import ModelPlatformType, ModelType
 from oasis import ActionType, AgentGraph, SocialAgent
+from ..utils.rate_limit import RateLimitAwareModelWrapper
 
 
 Persona = Mapping[str, object]
@@ -59,7 +61,7 @@ class UserInfo:
             f"{self.description}"
         )
 
-        system_content = """
+        system_content = f"""
 # OBJECTIVE
 You're a Twitter user, and I'll present you with some posts. After you see the posts, choose some actions from the following functions.
 
@@ -67,8 +69,15 @@ You're a Twitter user, and I'll present you with some posts. After you see the p
 Your actions should be consistent with your self-description and personality.
 {description}
 
+# ACTION STYLE
+- Mix actions each turn: pick 1-3 actions and combine passive (view/like) with active ones (comment, follow, create_post) so you do not only like posts.
+- Follow authors you meaningfully engage with or whose interests overlap with yours; avoid following the same account twice.
+- Create a short new post when you have a reaction to the feed (aim for one every 2-3 rounds); keep it in your voice and tie it to your interests/location when natural.
+- Comments must reference concrete details from the post, stay within 1-2 sentences, and avoid repeating the same phrasing; vary tone instead of generic praise.
+- If nothing new to add, use like/refresh/do_nothing instead of posting filler comments.
+
 # RESPONSE METHOD
-Please perform actions by tool calling.
+Please perform actions by tool calling only; avoid free-form text outside tool calls.
         """
 
         return system_content
@@ -80,7 +89,7 @@ Please perform actions by tool calling.
             f"{self.description}"
         )
 
-        system_content = """
+        system_content = f"""
 # OBJECTIVE
 You're a Reddit user engaging in subreddit discussions. Please interact with the feed according to the available actions.
 
@@ -88,8 +97,15 @@ You're a Reddit user engaging in subreddit discussions. Please interact with the
 Your actions should reflect your background and preferences.
 {description}
 
+# ACTION STYLE
+- Combine passive and active behaviors: browsing is fine, but make sure to mix in comments, follows/subscriptions, and your own posts so activity looks like a real user.
+- Follow or subscribe to users/threads when you appreciate multiple posts from them or when their interests match yours.
+- Post original content when you have a take or experience to add (roughly every few turns); keep it concise and grounded in your persona.
+- Comments should be specific to the thread, 1-2 sentences long, and avoid reusing the same wording; do not leave generic encouragement.
+- Prefer like/refresh/do_nothing if you have nothing meaningful to add rather than repeating similar comments.
+
 # RESPONSE METHOD
-Please perform actions by tool calling.
+Please perform actions by tool calling only; avoid free-form text outside tool calls.
         """
 
         return system_content
@@ -131,18 +147,30 @@ def create_default_model(
     model_type: ModelType = ModelType.GPT_4O,
     model_platform: ModelPlatformType = ModelPlatformType.OPENAI,
     model_config_dict: Mapping[str, object] | None = None,
+    rate_limit_config: Mapping[str, object] | None = None,
 ):
-    """Instantiate the default CAMEL model used by the notebook prototype."""
+    """Instantiate the default CAMEL model with rate-limit aware wrapper."""
 
     config = {"temperature": temperature}
     if model_config_dict:
         config.update(model_config_dict)
 
-    return ModelFactory.create(
+    base_model = ModelFactory.create(
         model_platform=model_platform,
         model_type=model_type,
         model_config_dict=config,
     )
+
+    retry_config = {
+        "max_retries": int(os.getenv("OPENAI_RATE_LIMIT_MAX_RETRIES", "5")),
+        "base_delay": float(os.getenv("OPENAI_RATE_LIMIT_BASE_DELAY", "2.0")),
+        "max_delay": float(os.getenv("OPENAI_RATE_LIMIT_MAX_DELAY", "30.0")),
+        "jitter_ratio": float(os.getenv("OPENAI_RATE_LIMIT_JITTER", "0.25")),
+    }
+    if rate_limit_config:
+        retry_config.update(rate_limit_config)
+
+    return RateLimitAwareModelWrapper(base_model, **retry_config)
 
 
 def _normalize_persona(persona: Persona, fallback_id: int) -> UserInfo:
@@ -209,4 +237,3 @@ def build_agent_graph_from_file(
 
     personas = load_personas(profile_path)
     return build_agent_graph(personas, model, available_actions=available_actions)
-
