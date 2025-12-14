@@ -43,6 +43,7 @@ AIエージェントを用いる理由は以下の二点である。
    uv sync
    ```
 - OpenAI の API キーを環境変数 `OPENAI_API_KEY` に設定する（`.env` に記載して `mise` / `uv` から読み込むのがおすすめ）。
+- （任意）温度を固定したい場合は `OPENAI_MODEL_TEMPERATURE` を設定。`gpt-5-nano` など温度指定不可モデルでは未指定にすること。
 - Neo4j を Docker Compose で起動する。
    ```bash
    docker compose up neo4j -d
@@ -52,7 +53,11 @@ AIエージェントを用いる理由は以下の二点である。
    ```bash
    uv run main.py --persona-path data/persona/persona.json --seed-post-count 20 --llm-rounds 1
    ```
-   実行結果は `results/<timestamp>/` 以下に保存され、`simulation.db`、`metadata.yaml`、使用ペルソナのコピー、設定ファイルのスナップショット（`config/` 配下）などが生成される。実行ログは `results/index.csv` と `results/latest_run.txt` に追記される。
+実行結果は `results/<timestamp>/` 以下に保存され、`simulation.db`、`metadata.yaml`、使用ペルソナのコピー、設定ファイルのスナップショット（`config/` 配下）などが生成される。実行ログは `results/index.csv` と `results/latest_run.txt` に追記される。
+   ※ シードファイルが存在しない／空の場合はエラーで停止します。パスの指定に注意してください。
+
+   **エラー時の挙動:**
+   - LLMアクションで例外が発生した場合は fail-fast で即座に実行を停止します（サイレントな継続を防止）。
 
    **主要なオプション:**
    | オプション | デフォルト | 説明 |
@@ -63,6 +68,8 @@ AIエージェントを用いる理由は以下の二点である。
    | `--llm-rounds` | `1` | LLMによるアクションラウンド数 |
    | `--agent-action-ratio` | `0.3` | 各LLMラウンドで行動するエージェントの割合（0.0〜1.0） |
    | `--recommendation-type` | `random` | コンテンツ推薦アルゴリズムの種類（下記参照） |
+   | `--model-type` | `gpt-4o` | 利用するモデルID（例: `gpt-4o`, `gpt-4o-mini`, `gpt-5-nano`。未登録の文字列も可） |
+   | `--model-temperature` | `unset` | モデルに渡す温度。未指定ならモデルデフォルト（`gpt-5-nano` など温度指定不可モデルで必須） |
 
    **推薦アルゴリズムの種類:**
    | タイプ | 説明 |
@@ -87,6 +94,9 @@ AIエージェントを用いる理由は以下の二点である。
 
    # エコーチェンバー効果を研究
    uv run main.py --recommendation-type echo_chamber --llm-rounds 10
+
+   # OpenAI の新モデル（例: gpt-5-nano）を温度未指定で使う
+   uv run main.py --model-type gpt-5-nano --model-temperature "" --llm-rounds 3
    ```
 - Neo4j に可視化用のノード・エッジを投入する。
    ```bash
