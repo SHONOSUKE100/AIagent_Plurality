@@ -9,6 +9,7 @@ from typing import Any, Dict
 import yaml
 
 from src.simulation.simulation import run
+from src.simulation.embedding_store import DEFAULT_EMBEDDING_MODEL
 
 
 RESULTS_DIR = Path("results")
@@ -144,6 +145,9 @@ def update_index(entry: Dict[str, Any]) -> None:
         "seed_post_count",
         "llm_rounds",
         "database_path",
+        "embedding_model",
+        "embedding_batch_size",
+        "skip_embeddings",
         "note",
         "status",
         "error",
@@ -226,6 +230,33 @@ def main() -> None:
         choices=["random", "collaborative", "bridging", "diversity", "echo_chamber", "hybrid"],
         help="Type of recommendation algorithm to use for content moderation.",
     )
+    parser.add_argument(
+        "--model-type",
+        default="gpt-4o",
+        help="Model identifier to use (e.g., gpt-4o, gpt-4o-mini, gpt-5-nano).",
+    )
+    parser.add_argument(
+        "--model-temperature",
+        type=float,
+        default=None,
+        help="Optional temperature override. Leave unset to use model defaults (required for some models like gpt-5-nano).",
+    )
+    parser.add_argument(
+        "--embedding-model",
+        default=DEFAULT_EMBEDDING_MODEL,
+        help="Embedding model used for posts/comments/bios. Set to empty to skip embedding.",
+    )
+    parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=32,
+        help="Batch size for embedding API calls.",
+    )
+    parser.add_argument(
+        "--skip-embeddings",
+        action="store_true",
+        help="Skip the embedding step to avoid extra API usage.",
+    )
 
     args = parser.parse_args()
 
@@ -259,6 +290,15 @@ def main() -> None:
     error_message: str | None = None
     run_error: Exception | None = None
 
+
+    # Embeddingモデルとスキップ判定のロジックを明確化
+    if args.skip_embeddings or not args.embedding_model:
+        skip_embeddings = True
+        effective_embedding_model = None  # 埋め込み自体をスキップ
+    else:
+        skip_embeddings = False
+        effective_embedding_model = args.embedding_model  # 明示指定のみ利用
+
     try:
         run(
             persona_path=persona_path,
@@ -268,6 +308,11 @@ def main() -> None:
             llm_rounds=args.llm_rounds,
             agent_action_ratio=args.agent_action_ratio,
             recommendation_type=args.recommendation_type,
+            model_type=args.model_type,
+            model_temperature=args.model_temperature,
+            embedding_model=effective_embedding_model or "",
+            embedding_batch_size=args.embedding_batch_size,
+            skip_embeddings=skip_embeddings,
         )
     except Exception as exc:  # noqa: BLE001 - capture all errors for metadata recording
         status = "failed"
@@ -287,6 +332,10 @@ def main() -> None:
             "agent_action_ratio": args.agent_action_ratio,
             "recommendation_type": args.recommendation_type,
             "database_path": str(resolved_database),
+            # skip_embeddingsがTrueならembedding_modelはNoneまたは空文字列
+            "embedding_model": effective_embedding_model if not skip_embeddings else None,
+            "embedding_batch_size": args.embedding_batch_size,
+            "skip_embeddings": skip_embeddings,
             "note": args.note or "",
             "status": status,
             "error": error_message,
@@ -306,6 +355,10 @@ def main() -> None:
             "seed_post_count": metadata["seed_post_count"],
             "llm_rounds": metadata["llm_rounds"],
             "database_path": metadata["database_path"],
+            # skip_embeddingsがTrueならembedding_modelはNoneまたは空文字列
+            "embedding_model": metadata["embedding_model"],
+            "embedding_batch_size": metadata["embedding_batch_size"],
+            "skip_embeddings": metadata["skip_embeddings"],
             "note": metadata["note"],
             "status": metadata["status"],
             "error": metadata["error"],
