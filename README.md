@@ -212,6 +212,178 @@ NeoDash を使用することで、カスタムダッシュボードでシミュ
 - `log/`: Oasis / CAMEL-OASIS が出力した各種ログファイル。
 - `data/neo4j/`: Docker Compose で起動した Neo4j のデータ・ログ・プラグインディレクトリ。自動生成されるため手動編集は不要。
 
+## データベース構成（SQLite）
+- 生成物は `results/<timestamp>/simulation.db`（またはデフォルトの `data/twitter_simulation.db`）。OASIS がソーシャルグラフを管理し、独自に作成する各種ログテーブルがあります。
+- 埋め込みを計算すると `post_embedding` / `comment_embedding` / `user_embedding` が追加されます（`src/simulation/embedding_store.py`）。  
+- `like` / `dislike` / `rec` テーブルの外部キーは `tweet(post_id)` を指す定義になっていますが、実体は `post.post_id` と対応します（SQLite の外部キー制約はデフォルト無効）。
+
+```mermaid
+erDiagram
+    user {
+        int user_id PK
+        int agent_id
+        string user_name
+        string name
+        string bio
+        datetime created_at
+        int num_followings
+        int num_followers
+    }
+    post {
+        int post_id PK
+        int user_id FK
+        int original_post_id FK
+        string content
+        string quote_content
+        datetime created_at
+        int num_likes
+        int num_dislikes
+        int num_shares
+        int num_reports
+    }
+    comment {
+        int comment_id PK
+        int post_id FK
+        int user_id FK
+        string content
+        datetime created_at
+        int num_likes
+        int num_dislikes
+    }
+    follow {
+        int follow_id PK
+        int follower_id FK
+        int followee_id FK
+        datetime created_at
+    }
+    mute {
+        int mute_id PK
+        int muter_id FK
+        int mutee_id FK
+        datetime created_at
+    }
+    like {
+        int like_id PK
+        int user_id FK
+        int post_id FK
+        datetime created_at
+    }
+    dislike {
+        int dislike_id PK
+        int user_id FK
+        int post_id FK
+        datetime created_at
+    }
+    report {
+        int report_id PK
+        int user_id FK
+        int post_id FK
+        string report_reason
+        datetime created_at
+    }
+    rec {
+        int user_id PK
+        int post_id PK
+    }
+    trace {
+        int user_id FK
+        datetime created_at
+        string action
+        string info
+    }
+    comment_like {
+        int comment_like_id PK
+        int user_id FK
+        int comment_id FK
+        datetime created_at
+    }
+    comment_dislike {
+        int comment_dislike_id PK
+        int user_id FK
+        int comment_id FK
+        datetime created_at
+    }
+    product {
+        int product_id PK
+        string product_name
+        int sales
+    }
+    chat_group {
+        int group_id PK
+        string name
+        datetime created_at
+    }
+    group_members {
+        int group_id FK
+        int agent_id
+        datetime joined_at
+    }
+    group_messages {
+        int message_id PK
+        int group_id FK
+        int sender_id FK
+        string content
+        datetime sent_at
+    }
+    post_embedding {
+        int post_id PK
+        string model
+        string embedding
+        datetime embedded_at
+    }
+    comment_embedding {
+        int comment_id PK
+        string model
+        string embedding
+        datetime embedded_at
+    }
+    user_embedding {
+        int user_id PK
+        string model
+        string embedding
+        datetime embedded_at
+    }
+
+    user ||--o{ post : creates
+    user ||--o{ comment : writes
+    post ||--o{ comment : has
+    user ||--o{ follow : follower
+    user ||--o{ follow : followee
+    user ||--o{ mute : muter
+    user ||--o{ mute : mutee
+    user ||--o{ like : likes
+    post ||--o{ like : receives
+    user ||--o{ dislike : dislikes
+    post ||--o{ dislike : receives
+    user ||--o{ report : reports
+    post ||--o{ report : reported
+    user ||--o{ rec : recommended
+    post ||--o{ rec : recommended
+    user ||--o{ trace : logs
+    user ||--o{ comment_like : likes
+    comment ||--o{ comment_like : receives
+    user ||--o{ comment_dislike : dislikes
+    comment ||--o{ comment_dislike : receives
+    post ||--o{ post_embedding : embedding
+    comment ||--o{ comment_embedding : embedding
+    user ||--o{ user_embedding : embedding
+    chat_group ||--o{ group_members : has
+    group_members }o--|| user : member
+    chat_group ||--o{ group_messages : holds
+    user ||--o{ group_messages : sends
+    post ||--o| post : quotes
+```
+
+主要テーブル概要:
+- `user` / `post` / `comment`: ユーザー・投稿・コメント本体。`post.original_post_id` と `quote_content` で引用/リポストを表現。
+- `follow` / `mute`: フォロー・ミュート関係。`num_followings` / `num_followers` はカウンタ。
+- `like` / `dislike` / `report` / `rec`: 投稿に対する反応・推薦ログ。`rec` は提示された投稿の記録。
+- `comment_like` / `comment_dislike`: コメントへのリアクション。
+- `trace`: 行動ログ（`action` と任意 JSON 文字列 `info`）。
+- `chat_group` / `group_members` / `group_messages`: グループチャット機能（試験的）。
+- `product`: 現状シミュレーション内では未使用のプレースホルダー。
+- `*_embedding`: 埋め込みベクトルの永続化。`embedding` は JSON 文字列として格納。
+
 ### 検討する推薦アルゴリズム
 本研究では、以下のアルゴリズムによる社会動態の違いを比較検証する。`--recommendation-type` オプションで指定可能。
 
