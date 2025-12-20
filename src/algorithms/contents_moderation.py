@@ -16,8 +16,7 @@ Available Algorithms:
 from __future__ import annotations
 
 import random
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from pydantic import BaseModel, Field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -35,8 +34,7 @@ class RecommendationType(str, Enum):
     HYBRID = "hybrid"
 
 
-@dataclass
-class Post:
+class Post(BaseModel):
     """Represents a post in the simulation."""
     
     post_id: str
@@ -46,24 +44,22 @@ class Post:
     num_likes: int = 0
     num_dislikes: int = 0
     embedding: Optional[np.ndarray] = None
-    topics: List[str] = field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
     sentiment_score: float = 0.0  # -1.0 (negative) to 1.0 (positive)
 
 
-@dataclass
-class User:
+class User(BaseModel):
     """Represents a user/agent in the simulation."""
     
     user_id: int
     bio: str = ""
     embedding: Optional[np.ndarray] = None
-    interests: List[str] = field(default_factory=list)
+    interests: List[str] = Field(default_factory=list)
     opinion_vector: Optional[np.ndarray] = None  # Opinion on various topics
     num_followers: int = 0
 
 
-@dataclass
-class Interaction:
+class Interaction(BaseModel):
     """Represents a user interaction with a post."""
     
     user_id: int
