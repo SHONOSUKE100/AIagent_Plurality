@@ -27,3 +27,19 @@ services:
       standalone: "false"
     depends_on:
       - neo4j
+
+  sim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aiagent-sim
+    environment:
+      # 外から .env を渡す場合は下記をコメントアウトし、env_file を使う
+      # OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      # OPENAI_MODEL_TEMPERATURE: "${OPENAI_MODEL_TEMPERATURE:-}"
+      TZ: "Asia/Tokyo"
+    env_file:
+      - .env
+    volumes:
+      - ./results:/app/results
+      - ./data:/app/data
