@@ -98,6 +98,13 @@ class BaseRecommender(ABC):
             List of post IDs to recommend.
         """
         pass
+
+    # Some platforms may call refresh hooks; provide no-op defaults for compatibility.
+    async def refresh_cache(self, *args, **kwargs) -> None:  # pragma: no cover - integration hook
+        return None
+
+    def refresh(self, *args, **kwargs) -> None:  # pragma: no cover - integration hook
+        return None
     
     def recommend_batch(
         self,

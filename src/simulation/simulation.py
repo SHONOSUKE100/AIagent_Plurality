@@ -59,6 +59,21 @@ def _enable_fail_fast_actions() -> None:
     _FAILFAST_INSTALLED = True
 
 
+def _install_recommender(platform, recommender) -> bool:
+    """Try to attach our recommender to the platform; return True if successful."""
+    attr_names = ["recommender", "rec_sys", "rec_system"]
+    for name in attr_names:
+        if hasattr(platform, name):
+            try:
+                setattr(platform, name, recommender)
+                print(f"[recommender] attached to platform.{name}")
+                return True
+            except Exception:
+                continue
+    print(f"[recommender] could not attach; platform attrs: {dir(platform)}")
+    return False
+
+
 def _prune_agent_memory(agent, keep_last: int = 10) -> None:
     """Trim agent memory to the most recent items to keep prompts small."""
 
@@ -259,6 +274,9 @@ async def run_simulation(
         platform=platform,
         database_path=str(db_path),
     )
+
+    # Inject custom recommender into the platform to avoid the heavy default cache refresh.
+    _install_recommender(env.platform, recommender)
 
     try:
         await env.reset()
