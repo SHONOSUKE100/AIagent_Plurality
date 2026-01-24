@@ -206,7 +206,7 @@ def main() -> None:
     parser.add_argument(
         "--seed-post-count",
         type=int,
-        default=20,
+        default=10,
         help="Number of agents that create initial posts before the LLM rounds.",
     )
     parser.add_argument(
@@ -223,8 +223,8 @@ def main() -> None:
     parser.add_argument(
         "--agent-action-ratio",
         type=float,
-        default=0.3,
-        help="Ratio of agents (0.0-1.0) to randomly select for each LLM round. Default is 0.3 (30%%).",
+        default=0.2,
+        help="Ratio of agents (0.0-1.0) to randomly select for each LLM round. Default is 0.2 (20%%).",
     )
     parser.add_argument(
         "--recommendation-type",
@@ -251,8 +251,14 @@ def main() -> None:
     parser.add_argument(
         "--embedding-batch-size",
         type=int,
-        default=32,
+        default=16,
         help="Batch size for embedding API calls.",
+    )
+    parser.add_argument(
+        "--max-memory-messages",
+        type=int,
+        default=5,
+        help="Number of past messages to retain in agent memory to reduce prompt and RAM size.",
     )
     parser.add_argument(
         "--skip-embeddings",
@@ -317,6 +323,7 @@ def main() -> None:
             skip_embeddings=skip_embeddings,
             step_metrics_path=run_dir / "step_metrics.csv",
             step_snapshot_dir=run_dir / "step_snapshots",
+            max_memory_messages=args.max_memory_messages,
         )
     except Exception as exc:  # noqa: BLE001 - capture all errors for metadata recording
         status = "failed"

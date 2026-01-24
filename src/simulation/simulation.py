@@ -223,7 +223,8 @@ async def run_simulation(
     skip_embeddings: bool = False,
     step_metrics_path: Path | str | None = None,
     step_snapshot_dir: Path | str | None = None,
-) -> None:
+    max_memory_messages: int = 5,
+    ) -> None:
     """Run the social simulation once using personas from ``persona_path``.
     
     Args:
@@ -242,6 +243,7 @@ async def run_simulation(
         skip_embeddings: Skip embedding step (useful to avoid API calls).
         step_metrics_path: Optional CSV path to record per-step graph metrics.
         step_snapshot_dir: Optional directory to save SQLite snapshots after each step.
+        max_memory_messages: Number of past messages to retain in agent memory (smaller saves RAM).
 
     Notes:
         - Embeddings are generated incrementally (bios after reset, seeded posts
@@ -320,6 +322,7 @@ async def run_simulation(
                 db_path=db_path,
                 embedding_model=embedding_model,
                 embedding_batch_size=embedding_batch_size,
+                max_memory_messages=max_memory_messages,
             )
             _capture_step_metrics(
                 db_path=db_path,
@@ -411,6 +414,7 @@ async def _llm_round(
     db_path: Path | None = None,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     embedding_batch_size: int = 32,
+    max_memory_messages: int = 5,
 ) -> None:
     """Execute one LLM round with a random subset of agents.
     
@@ -444,7 +448,7 @@ async def _llm_round(
     if clear_memory_before_action:
         for _, agent in selected_agents:
             try:
-                _prune_agent_memory(agent, keep_last=10)
+                _prune_agent_memory(agent, keep_last=max_memory_messages)
             except Exception:
                 pass  # Ignore if memory clearing fails
     
@@ -511,17 +515,18 @@ def run(
     persona_path: Path | str = Path("data/persona/persona.json"),
     database_path: Path | str = Path("data/twitter_simulation.db"),
     seeding_path: Path | str = Path("data/seeding.json"),
-    seed_post_count: int = 20,
+    seed_post_count: int = 10,
     llm_rounds: int = 1,
-    agent_action_ratio: float = 0.3,
+    agent_action_ratio: float = 0.2,
     recommendation_type: RecommendationType | str = RecommendationType.RANDOM,
     model_type: str | ModelType = "gpt-4o",
     model_temperature: float | None = None,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
-    embedding_batch_size: int = 32,
+    embedding_batch_size: int = 16,
     skip_embeddings: bool = False,
     step_metrics_path: Path | str | None = None,
     step_snapshot_dir: Path | str | None = None,
+    max_memory_messages: int = 5,
 ) -> None:
     """Convenience wrapper that mirrors the notebook execution.
     
@@ -539,6 +544,7 @@ def run(
         skip_embeddings: Skip embedding step (useful to avoid API calls).
         step_metrics_path: Optional CSV path to record per-step graph metrics.
         step_snapshot_dir: Optional directory to save SQLite snapshots after each step.
+        max_memory_messages: Number of past messages to retain in agent memory (smaller saves RAM).
     """
 
     asyncio.run(
@@ -558,5 +564,6 @@ def run(
             skip_embeddings=skip_embeddings,
             step_metrics_path=step_metrics_path,
             step_snapshot_dir=step_snapshot_dir,
+            max_memory_messages=max_memory_messages,
         )
     )
