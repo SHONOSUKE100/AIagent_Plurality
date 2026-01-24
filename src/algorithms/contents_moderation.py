@@ -9,16 +9,15 @@ Available Algorithms:
     - RandomRecommender: Random baseline
     - CollaborativeFilteringRecommender: User-based collaborative filtering
     - BridgingRecommender: Promotes content that bridges opinion clusters
-    - DiversityRecommender: Maximizes content diversity
-    - EchoChambberRecommender: Intentionally creates echo chambers (for study)
 """
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 import random
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -29,14 +28,12 @@ class RecommendationType(str, Enum):
     RANDOM = "random"
     COLLABORATIVE = "collaborative"
     BRIDGING = "bridging"
-    DIVERSITY = "diversity"
-    ECHO_CHAMBER = "echo_chamber"
-    HYBRID = "hybrid"
 
 
 class Post(BaseModel):
     """Represents a post in the simulation."""
     
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     post_id: str
     user_id: int
     content: str
@@ -51,6 +48,7 @@ class Post(BaseModel):
 class User(BaseModel):
     """Represents a user/agent in the simulation."""
     
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     user_id: int
     bio: str = ""
     embedding: Optional[np.ndarray] = None
@@ -62,6 +60,7 @@ class User(BaseModel):
 class Interaction(BaseModel):
     """Represents a user interaction with a post."""
     
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     user_id: int
     post_id: str
     action: str  # 'like', 'dislike', 'comment', 'repost', 'view'
@@ -342,216 +341,6 @@ class BridgingRecommender(BaseRecommender):
         return 0.5  # Neutral score if no embeddings
 
 
-class DiversityRecommender(BaseRecommender):
-    """Diversity-maximizing recommender.
-    
-    This algorithm aims to maximize the diversity of recommended content
-    by selecting posts that cover different topics and viewpoints.
-    """
-    
-    def __init__(
-        self,
-        max_recommendations: int = 10,
-        diversity_weight: float = 0.6,
-        recency_weight: float = 0.2,
-        popularity_weight: float = 0.2,
-    ):
-        super().__init__(max_recommendations)
-        self.diversity_weight = diversity_weight
-        self.recency_weight = recency_weight
-        self.popularity_weight = popularity_weight
-    
-    def recommend(
-        self,
-        user: User,
-        posts: Sequence[Post],
-        interactions: Sequence[Interaction],
-        all_users: Sequence[User],
-    ) -> List[str]:
-        available_posts = self._filter_own_posts(user, posts)
-        if not available_posts:
-            return []
-        
-        # Use greedy selection to maximize diversity
-        selected: List[Post] = []
-        remaining = list(available_posts)
-        
-        while len(selected) < self.max_recommendations and remaining:
-            best_post = None
-            best_score = -float('inf')
-            
-            for post in remaining:
-                score = self._compute_marginal_gain(post, selected, remaining)
-                if score > best_score:
-                    best_score = score
-                    best_post = post
-            
-            if best_post:
-                selected.append(best_post)
-                remaining.remove(best_post)
-            else:
-                break
-        
-        return [p.post_id for p in selected]
-    
-    def _compute_marginal_gain(
-        self,
-        post: Post,
-        selected: List[Post],
-        all_posts: List[Post],
-    ) -> float:
-        """Compute the marginal gain of adding a post to the selection."""
-        # Diversity: how different is this post from already selected posts
-        if selected:
-            similarities = []
-            for sel_post in selected:
-                if post.embedding is not None and sel_post.embedding is not None:
-                    sim = self._compute_cosine_similarity(post.embedding, sel_post.embedding)
-                    similarities.append(sim)
-            
-            if similarities:
-                diversity_score = 1 - max(similarities)  # Lower similarity = higher diversity
-            else:
-                diversity_score = 0.5
-        else:
-            diversity_score = 1.0  # First post gets full diversity score
-        
-        # Recency score (normalized by position in list)
-        try:
-            recency_idx = all_posts.index(post)
-            recency_score = 1 - (recency_idx / len(all_posts))
-        except (ValueError, ZeroDivisionError):
-            recency_score = 0.5
-        
-        # Popularity score
-        total_engagement = post.num_likes + abs(post.num_dislikes)
-        max_engagement = max(
-            (p.num_likes + abs(p.num_dislikes) for p in all_posts),
-            default=1
-        )
-        popularity_score = total_engagement / max_engagement if max_engagement > 0 else 0
-        
-        return (
-            self.diversity_weight * diversity_score +
-            self.recency_weight * recency_score +
-            self.popularity_weight * popularity_score
-        )
-
-
-class EchoChamberRecommender(BaseRecommender):
-    """Echo chamber recommender (for research purposes).
-    
-    This algorithm intentionally creates echo chambers by recommending
-    content that strongly aligns with the user's existing opinions.
-    Useful for studying the effects of echo chambers on social dynamics.
-    """
-    
-    def __init__(
-        self,
-        max_recommendations: int = 10,
-        similarity_bias: float = 0.9,
-    ):
-        super().__init__(max_recommendations)
-        self.similarity_bias = similarity_bias
-    
-    def recommend(
-        self,
-        user: User,
-        posts: Sequence[Post],
-        interactions: Sequence[Interaction],
-        all_users: Sequence[User],
-    ) -> List[str]:
-        available_posts = self._filter_own_posts(user, posts)
-        if not available_posts:
-            return []
-        
-        # Score posts by similarity to user's opinions/interests
-        post_scores = []
-        for post in available_posts:
-            if user.embedding is not None and post.embedding is not None:
-                similarity = self._compute_cosine_similarity(user.embedding, post.embedding)
-            elif user.opinion_vector is not None and post.embedding is not None:
-                similarity = self._compute_cosine_similarity(user.opinion_vector, post.embedding)
-            else:
-                similarity = random.random()
-            
-            # Apply bias to strongly prefer similar content
-            biased_score = similarity ** (1 / self.similarity_bias)
-            post_scores.append((post.post_id, biased_score))
-        
-        post_scores.sort(key=lambda x: x[1], reverse=True)
-        return [pid for pid, _ in post_scores[:self.max_recommendations]]
-
-
-class HybridRecommender(BaseRecommender):
-    """Hybrid recommender combining multiple strategies.
-    
-    This recommender combines multiple recommendation strategies
-    with configurable weights to balance different objectives.
-    """
-    
-    def __init__(
-        self,
-        max_recommendations: int = 10,
-        collaborative_weight: float = 0.3,
-        bridging_weight: float = 0.3,
-        diversity_weight: float = 0.2,
-        random_weight: float = 0.2,
-    ):
-        super().__init__(max_recommendations)
-        
-        # Normalize weights
-        total = collaborative_weight + bridging_weight + diversity_weight + random_weight
-        self.collaborative_weight = collaborative_weight / total
-        self.bridging_weight = bridging_weight / total
-        self.diversity_weight = diversity_weight / total
-        self.random_weight = random_weight / total
-        
-        # Initialize sub-recommenders
-        self.collaborative = CollaborativeFilteringRecommender(max_recommendations)
-        self.bridging = BridgingRecommender(max_recommendations)
-        self.diversity = DiversityRecommender(max_recommendations)
-        self.random = RandomRecommender(max_recommendations)
-    
-    def recommend(
-        self,
-        user: User,
-        posts: Sequence[Post],
-        interactions: Sequence[Interaction],
-        all_users: Sequence[User],
-    ) -> List[str]:
-        # Get recommendations from each sub-recommender
-        collab_recs = self.collaborative.recommend(user, posts, interactions, all_users)
-        bridge_recs = self.bridging.recommend(user, posts, interactions, all_users)
-        diverse_recs = self.diversity.recommend(user, posts, interactions, all_users)
-        random_recs = self.random.recommend(user, posts, interactions, all_users)
-        
-        # Compute how many items to take from each
-        collab_count = int(self.max_recommendations * self.collaborative_weight)
-        bridge_count = int(self.max_recommendations * self.bridging_weight)
-        diverse_count = int(self.max_recommendations * self.diversity_weight)
-        random_count = self.max_recommendations - collab_count - bridge_count - diverse_count
-        
-        # Combine recommendations, removing duplicates
-        combined: List[str] = []
-        seen: set = set()
-        
-        for rec_list, count in [
-            (collab_recs, collab_count),
-            (bridge_recs, bridge_count),
-            (diverse_recs, diverse_count),
-            (random_recs, random_count),
-        ]:
-            for post_id in rec_list:
-                if post_id not in seen and len(combined) < self.max_recommendations:
-                    combined.append(post_id)
-                    seen.add(post_id)
-                if len(combined) >= self.max_recommendations:
-                    break
-        
-        return combined
-
-
 def create_recommender(
     rec_type: RecommendationType | str,
     max_recommendations: int = 10,
@@ -578,10 +367,13 @@ def create_recommender(
         RecommendationType.RANDOM: RandomRecommender,
         RecommendationType.COLLABORATIVE: CollaborativeFilteringRecommender,
         RecommendationType.BRIDGING: BridgingRecommender,
-        RecommendationType.DIVERSITY: DiversityRecommender,
-        RecommendationType.ECHO_CHAMBER: EchoChamberRecommender,
-        RecommendationType.HYBRID: HybridRecommender,
     }
-    
-    recommender_class = recommender_map.get(rec_type, RandomRecommender)
+
+    if rec_type not in recommender_map:
+        raise ValueError(
+            f"Unsupported recommendation type: {rec_type}. "
+            f"Supported types are: {[r.value for r in recommender_map]}"
+        )
+
+    recommender_class = recommender_map[rec_type]
     return recommender_class(max_recommendations=max_recommendations, **kwargs)

@@ -119,7 +119,7 @@ def get_git_metadata() -> Dict[str, Any]:
 def create_run_directory(base_dir: Path, run_name: str | None) -> tuple[Path, str]:
     base_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    default_name = run_name or timestamp
+    default_name = f"{run_name}-{timestamp}" if run_name else timestamp
     candidate = base_dir / default_name
     suffix = 1
     while candidate.exists():
@@ -153,6 +153,8 @@ def update_index(entry: Dict[str, Any]) -> None:
         "error",
         "run_args",
         "config_snapshot",
+        "step_metrics_file",
+        "step_snapshot_dir",
     ]
 
     existing_rows: list[Dict[str, Any]] = []
@@ -227,7 +229,7 @@ def main() -> None:
     parser.add_argument(
         "--recommendation-type",
         default="random",
-        choices=["random", "collaborative", "bridging", "diversity", "echo_chamber", "hybrid"],
+        choices=["random", "collaborative", "bridging"],
         help="Type of recommendation algorithm to use for content moderation.",
     )
     parser.add_argument(
@@ -313,6 +315,8 @@ def main() -> None:
             embedding_model=effective_embedding_model or "",
             embedding_batch_size=args.embedding_batch_size,
             skip_embeddings=skip_embeddings,
+            step_metrics_path=run_dir / "step_metrics.csv",
+            step_snapshot_dir=run_dir / "step_snapshots",
         )
     except Exception as exc:  # noqa: BLE001 - capture all errors for metadata recording
         status = "failed"
@@ -342,6 +346,8 @@ def main() -> None:
             "config_snapshot": config_snapshot,
             "run_args_file": str(args_path.relative_to(run_dir)),
             "neo4j_config_file": str(neo4j_config_path.relative_to(run_dir)),
+            "step_metrics_file": "step_metrics.csv",
+            "step_snapshot_dir": "step_snapshots",
             "git": git_info,
         }
 
@@ -364,6 +370,8 @@ def main() -> None:
             "error": metadata["error"],
             "run_args": metadata["run_args_file"],
             "config_snapshot": ";".join(config_snapshot),
+            "step_metrics_file": metadata.get("step_metrics_file"),
+            "step_snapshot_dir": metadata.get("step_snapshot_dir"),
         }
         update_index(index_entry)
 

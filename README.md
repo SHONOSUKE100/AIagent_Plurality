@@ -77,9 +77,6 @@ AIエージェントを用いる理由は以下の二点である。
    | `random` | ランダム推薦（ベースライン） |
    | `collaborative` | 協調フィルタリング（類似ユーザーの行動に基づく） |
    | `bridging` | 分断修復型（異なる意見クラスター間をつなぐコンテンツを優先） |
-   | `diversity` | 多様性最大化（様々なトピックやビューポイントをカバー） |
-   | `echo_chamber` | エコーチェンバー促進（研究用：意図的にエコーチェンバーを作成） |
-   | `hybrid` | ハイブリッド（複数のアルゴリズムを組み合わせ） |
 
    **使用例:**
    ```bash
@@ -92,8 +89,8 @@ AIエージェントを用いる理由は以下の二点である。
    # 分断修復型アルゴリズムでシミュレーション
    uv run main.py --recommendation-type bridging --llm-rounds 5
 
-   # エコーチェンバー効果を研究
-   uv run main.py --recommendation-type echo_chamber --llm-rounds 10
+   # 協調フィルタリングで比較
+   uv run main.py --recommendation-type collaborative --llm-rounds 5
 
    # OpenAI の新モデル（例: gpt-5-nano）を温度未指定で使う
    uv run main.py --model-type gpt-5-nano --model-temperature "" --llm-rounds 3
@@ -401,21 +398,6 @@ erDiagram
    - 異なる意見クラスター間をつなぐ（両者から支持される）コンテンツを優先的に提示。
    - 異なる意見を持つユーザーから支持を得ている投稿を高スコア化。
    - 実装: `BridgingRecommender`
-   
-4. **多様性最大化 (diversity)**: 
-   - 推薦リスト内のコンテンツ多様性を最大化。
-   - 貪欲法で、既に選択されたコンテンツと異なる内容を優先的に選択。
-   - 実装: `DiversityRecommender`
-   
-5. **エコーチェンバー促進 (echo_chamber)**: 
-   - 研究用。意図的にエコーチェンバーを形成するアルゴリズム。
-   - ユーザーの意見に強く一致するコンテンツを優先推薦。
-   - 実装: `EchoChamberRecommender`
-   
-6. **ハイブリッド (hybrid)**: 
-   - 複数のアルゴリズム（協調フィルタリング、分断修復、多様性、ランダム）を組み合わせ。
-   - 各アルゴリズムの重みを調整可能。
-   - 実装: `HybridRecommender`
 
 ## 評価指標
 
@@ -443,7 +425,7 @@ erDiagram
 ├── src/
 │   ├── agents/              # ペルソナ読み込み・エージェント生成
 │   ├── algorithms/          # コンテンツ推薦・モデレーションアルゴリズム
-│   │   └── contents_moderation.py  # 6種類の推薦アルゴリズム実装
+│   │   └── contents_moderation.py  # 3種類の推薦アルゴリズム実装
 │   ├── evaluation/          # グラフ指標計算などの評価ツール
 │   ├── simulation/          # シミュレーションのエントリポイント
 │   └── visualization/       # Neo4j エクスポート他

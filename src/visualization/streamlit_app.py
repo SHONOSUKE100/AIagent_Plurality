@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Tuple, Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -26,10 +26,14 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.evaluation.graph_base import calculate_modularity, compute_basic_metrics
 from src.evaluation.graph_data import load_like_graph_from_connection
+from src.evaluation.ecs import compute_ecs_from_db
+import matplotlib_fontja
 
 
 DEFAULT_DB_PATH = Path("data/twitter_simulation.db")
 LATEST_RUN_FILE = Path("results/latest_run.txt")
+STEP_METRICS_FILE = "step_metrics.csv"
+STEP_SNAPSHOT_DIR = "step_snapshots"
 
 
 @st.cache_resource(show_spinner=False)
@@ -159,16 +163,22 @@ def build_follow_graph(conn: sqlite3.Connection) -> nx.DiGraph:
     return graph
 
 
-def build_like_graph(conn: sqlite3.Connection, post_limit: int = 25, edge_limit: int = 400) -> nx.Graph:
+def build_like_graph(
+    conn: sqlite3.Connection,
+    post_limit: int | None = 25,
+    edge_limit: int | None = 400,
+) -> nx.Graph:
+    limit_clause = "" if post_limit is None else "LIMIT ?"
+    post_params: list[int] = [] if post_limit is None else [post_limit]
     posts = fetch_df(
         conn,
-        """
+        f"""
         SELECT post_id, content, user_id
         FROM post
         ORDER BY created_at DESC
-        LIMIT ?
+        {limit_clause}
         """,
-        params=[post_limit],
+        params=post_params,
     )
 
     if posts.empty:
@@ -176,6 +186,8 @@ def build_like_graph(conn: sqlite3.Connection, post_limit: int = 25, edge_limit:
 
     post_ids = posts["post_id"].tolist()
     placeholders = ",".join(["?"] * len(post_ids))
+    like_limit_clause = "" if edge_limit is None else "LIMIT ?"
+    like_params = post_ids + ([] if edge_limit is None else [edge_limit])
     likes = fetch_df(
         conn,
         f"""
@@ -184,9 +196,9 @@ def build_like_graph(conn: sqlite3.Connection, post_limit: int = 25, edge_limit:
         JOIN user AS u ON u.user_id = l.user_id
         JOIN post AS p ON p.post_id = l.post_id
         WHERE l.post_id IN ({placeholders})
-        LIMIT ?
+        {like_limit_clause}
         """,
-        params=post_ids + [edge_limit],
+        params=like_params,
     )
 
     graph = nx.Graph()
@@ -210,21 +222,23 @@ def build_like_graph(conn: sqlite3.Connection, post_limit: int = 25, edge_limit:
 
 def build_engagement_graph(
     conn: sqlite3.Connection,
-    post_limit: int = 15,
-    like_limit: int = 400,
-    comment_limit: int = 150,
+    post_limit: int | None = 15,
+    like_limit: int | None = 400,
+    comment_limit: int | None = 150,
 ) -> nx.Graph:
-    """Build a heterogeneous graph of users, posts, and comments."""
+    """Build a user-only interaction graph aggregated from posts/comments/likes."""
 
+    post_limit_clause = "" if post_limit is None else "LIMIT ?"
+    post_params: list[int] = [] if post_limit is None else [post_limit]
     posts = fetch_df(
         conn,
-        """
+        f"""
         SELECT post_id, user_id AS author_id, content
         FROM post
         ORDER BY created_at DESC
-        LIMIT ?
+        {post_limit_clause}
         """,
-        params=[post_limit],
+        params=post_params,
     )
     if posts.empty:
         return nx.Graph()
@@ -232,6 +246,8 @@ def build_engagement_graph(
     post_ids = posts["post_id"].tolist()
     placeholders = ",".join(["?"] * len(post_ids))
 
+    comment_limit_clause = "" if comment_limit is None else "LIMIT ?"
+    comment_params = post_ids + ([] if comment_limit is None else [comment_limit])
     comments = fetch_df(
         conn,
         f"""
@@ -239,68 +255,86 @@ def build_engagement_graph(
         FROM comment
         WHERE post_id IN ({placeholders})
         ORDER BY created_at DESC
-        LIMIT ?
+        {comment_limit_clause}
         """,
-        params=post_ids + [comment_limit],
+        params=comment_params,
     )
 
+    like_limit_clause = "" if like_limit is None else "LIMIT ?"
+    like_params = post_ids + ([] if like_limit is None else [like_limit])
     likes = fetch_df(
         conn,
         f"""
         SELECT user_id, post_id
         FROM like
         WHERE post_id IN ({placeholders})
-        LIMIT ?
+        {like_limit_clause}
         """,
-        params=post_ids + [like_limit],
+        params=like_params,
     )
 
     comment_likes = pd.DataFrame()
     if not comments.empty:
         comment_ids = comments["comment_id"].tolist()
         placeholders_comments = ",".join(["?"] * len(comment_ids))
+        comment_like_limit_clause = "" if like_limit is None else "LIMIT ?"
+        comment_like_params = comment_ids + ([] if like_limit is None else [like_limit])
         comment_likes = fetch_df(
             conn,
             f"""
             SELECT user_id, comment_id
             FROM comment_like
             WHERE comment_id IN ({placeholders_comments})
-            LIMIT ?
+            {comment_like_limit_clause}
             """,
-            params=comment_ids + [like_limit],
+            params=comment_like_params,
         )
 
-    graph = nx.Graph()
+    # Aggregate interactions into user-user edges
+    edge_weights: dict[tuple[int, int], int] = {}
+    def _add_edge(u: int, v: int, increment: int = 1) -> None:
+        if u == v:
+            return
+        key = tuple(sorted((u, v)))
+        edge_weights[key] = edge_weights.get(key, 0) + increment
 
-    # Posts
     for _, row in posts.iterrows():
-        label = row["content"][:40] + ("..." if len(row["content"]) > 40 else "")
-        graph.add_node(int(row["post_id"]), kind="post", label=label)
-        graph.add_node(int(row["author_id"]), kind="user")
-        graph.add_edge(int(row["author_id"]), int(row["post_id"]))  # authored
-
-    # Comments
-    for _, row in comments.iterrows():
-        cid = int(row["comment_id"])
-        pid = int(row["post_id"])
         author = int(row["author_id"])
-        graph.add_node(cid, kind="comment")
-        graph.add_node(author, kind="user")
-        graph.add_edge(author, cid)  # wrote comment
-        graph.add_edge(cid, pid)  # on post
+        # ensure node exists
+        edge_weights.setdefault((author, author), 0)
 
-    # Likes on posts
+    for _, row in comments.iterrows():
+        comment_author = int(row["author_id"])
+        post_author = int(row["post_id"])  # placeholder to fetch later
+    # map post_id -> author for quick lookup
+    post_author_map = {int(r["post_id"]): int(r["author_id"]) for _, r in posts.iterrows()}
+    # comments interactions
+    for _, row in comments.iterrows():
+        comment_author = int(row["author_id"])
+        post_author = post_author_map.get(int(row["post_id"]))
+        if post_author is not None:
+            _add_edge(comment_author, post_author)
+
     for _, row in likes.iterrows():
-        graph.add_node(int(row["user_id"]), kind="user")
-        graph.add_node(int(row["post_id"]), kind="post")
-        graph.add_edge(int(row["user_id"]), int(row["post_id"]))
+        liker = int(row["user_id"])
+        post_author = post_author_map.get(int(row["post_id"]))
+        if post_author is not None:
+            _add_edge(liker, post_author)
 
-    # Likes on comments
     if not comment_likes.empty:
+        comment_author_map = {int(r["comment_id"]): int(r["author_id"]) for _, r in comments.iterrows()}
         for _, row in comment_likes.iterrows():
-            graph.add_node(int(row["user_id"]), kind="user")
-            graph.add_node(int(row["comment_id"]), kind="comment")
-            graph.add_edge(int(row["user_id"]), int(row["comment_id"]))
+            liker = int(row["user_id"])
+            comment_author = comment_author_map.get(int(row["comment_id"]))
+            if comment_author is not None:
+                _add_edge(liker, comment_author)
+
+    graph = nx.Graph()
+    for (u, v), w in edge_weights.items():
+        graph.add_node(u, kind="user")
+        graph.add_node(v, kind="user")
+        if u != v:
+            graph.add_edge(u, v, weight=w)
 
     return graph
 
@@ -429,6 +463,107 @@ def render_metrics(conn: sqlite3.Connection) -> None:
     st.dataframe(pd.DataFrame([metrics]), hide_index=True)
 
 
+def render_ecs(conn: sqlite3.Connection) -> None:
+    st.subheader("Echo Chamber Score (ECS)")
+    ecs_per_comm, ecs_global, communities, valid_sizes = compute_ecs_from_db(conn)
+    if not communities or not ecs_per_comm:
+        st.info("ECSを計算するための埋め込みまたはコミュニティ情報が不足しています。")
+        return
+
+    st.metric("ECS(Ω)", f"{ecs_global:.4f}")
+
+    rows = []
+    for idx in sorted(ecs_per_comm):
+        label = f"ω{idx+1}"
+        size_valid = valid_sizes.get(idx, len(communities[idx]) if idx < len(communities) else 0)
+        ecs_star = ecs_per_comm[idx]
+        rows.append({"community": label, "size_used": size_valid, "ECS*": ecs_star})
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+    # Matplotlib可視化: コミュニティサイズとECS*の関係を散布図で
+    if not df.empty:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.scatter(df["size_used"], df["ECS*"], color="#2563eb")
+        for _, row in df.iterrows():
+            ax.text(row["size_used"], row["ECS*"] + 0.01, row["community"], fontsize=8)
+        ax.set_xlabel("コミュニティ有効サイズ (埋め込みがあるユーザー数)")
+        ax.set_ylabel("ECS*")
+        ax.set_ylim(0, 1)
+        ax.grid(alpha=0.3)
+        ax.set_title("コミュニティ別 ECS* とサイズ")
+        st.pyplot(fig, use_container_width=True)
+
+    st.bar_chart(df.set_index("community")[["ECS*"]], height=220)
+
+
+def render_ecs_embedding_graph(conn: sqlite3.Connection) -> None:
+    """埋め込みとコミュニティに基づくユーザーグラフを可視化（ECS計算と同じ前処理）。"""
+    ecs_per_comm, ecs_global, communities, valid_sizes = compute_ecs_from_db(conn)
+    if not communities or not ecs_per_comm:
+        return
+
+    # Reuse embeddings and likes filtered to users with embeddings
+    from src.evaluation.ecs import load_user_embeddings, detect_communities_from_likes
+
+    embeddings = load_user_embeddings(conn)
+    nodes, edges = load_like_graph_from_connection(conn)
+    # Filter to embedded users
+    embedded_users = set(embeddings)
+    if not embedded_users:
+        return
+    edges_embedded = [
+        (int(u), int(v), w)
+        for u, v, w in edges
+        if int(u) in embedded_users and int(v) in embedded_users
+    ]
+    nodes_embedded = [n for n in nodes if int(n) in embedded_users]
+    if not nodes_embedded or not edges_embedded:
+        return
+
+    # Recompute communities on embedded subgraph for visualization consistency
+    comms_vis = detect_communities_from_likes(nodes_embedded, edges_embedded)
+    user_to_comm = {}
+    for idx, comm in enumerate(comms_vis):
+        for u in comm:
+            user_to_comm[int(u)] = idx
+
+    # Positions from embeddings (first 2 dims); fallback to spring layout
+    sample_vec = next(iter(embeddings.values()))
+    use_embed_pos = len(sample_vec) >= 2
+    if use_embed_pos:
+        pos = {u: (embeddings[u][0], embeddings[u][1]) for u in embedded_users}
+    else:
+        g = nx.Graph()
+        g.add_nodes_from(embedded_users)
+        g.add_weighted_edges_from(edges_embedded)
+        pos = nx.spring_layout(g, seed=42)
+
+    cmap = plt.get_cmap("tab20")
+    colors = []
+    for u in embedded_users:
+        comm_idx = user_to_comm.get(u, 0)
+        colors.append(cmap(comm_idx % cmap.N))
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    # Draw edges lightly
+    for u, v, w in edges_embedded:
+        x1, y1 = pos[int(u)]
+        x2, y2 = pos[int(v)]
+        ax.plot([x1, x2], [y1, y2], color="#cbd5e1", alpha=0.3, linewidth=0.8)
+
+    xs = [pos[u][0] for u in embedded_users]
+    ys = [pos[u][1] for u in embedded_users]
+    ax.scatter(xs, ys, c=colors, s=40, edgecolors="#111827", linewidths=0.4)
+
+    ax.set_title("ユーザー埋め込み空間におけるコミュニティ（ECS算出と同前処理）")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.axis("off")
+    st.pyplot(fig, use_container_width=True)
+
+
 def render_posts(conn: sqlite3.Connection) -> None:
     st.subheader("ポストとコメント")
     posts = load_recent_posts(conn)
@@ -456,9 +591,13 @@ def render_follow_graph(conn: sqlite3.Connection) -> None:
         st.info("フォロー関係が見つかりませんでした。")
 
 
-def render_like_graph(conn: sqlite3.Connection) -> None:
+def render_like_graph(conn: sqlite3.Connection, show_all: bool = False) -> None:
     st.subheader("ユーザーとコンテンツのいいね関係")
-    graph = build_like_graph(conn)
+    graph = build_like_graph(
+        conn,
+        post_limit=None if show_all else 25,
+        edge_limit=None if show_all else 400,
+    )
     fig = plot_network(graph, "User-Post likes", color_map={"user": "#38bdf8", "post": "#f97316"})
     if fig:
         st.pyplot(fig, use_container_width=True)
@@ -466,13 +605,18 @@ def render_like_graph(conn: sqlite3.Connection) -> None:
         st.info("いいね情報が見つかりませんでした。")
 
 
-def render_engagement_graph(conn: sqlite3.Connection) -> None:
-    st.subheader("ユーザー・ポスト・コメントの関係")
-    graph = build_engagement_graph(conn)
+def render_engagement_graph(conn: sqlite3.Connection, show_all: bool = False) -> None:
+    st.subheader("ユーザー間インタラクション（ポスト/コメント経由を集約）")
+    graph = build_engagement_graph(
+        conn,
+        post_limit=None if show_all else 15,
+        like_limit=None if show_all else 400,
+        comment_limit=None if show_all else 150,
+    )
     fig = plot_network(
         graph,
         "Engagement network",
-        color_map={"user": "#38bdf8", "post": "#f97316", "comment": "#22c55e"},
+        color_map={"user": "#38bdf8"},
     )
     if fig:
         st.pyplot(fig, use_container_width=True)
@@ -526,6 +670,72 @@ def render_top_users(conn: sqlite3.Connection) -> None:
     st.dataframe(top_users, hide_index=True)
 
 
+def _infer_run_dir(db_path: Path) -> Optional[Path]:
+    """Best-effort guess of the run directory from a DB path."""
+
+    if db_path.name == "simulation.db":
+        return db_path.parent
+    if db_path.parent.name == STEP_SNAPSHOT_DIR:
+        return db_path.parent.parent
+    # Fallback: assume parent is the run dir
+    return db_path.parent if db_path.parent.exists() else None
+
+
+def _list_snapshots(run_dir: Path) -> list[tuple[str, Path]]:
+    """Return available snapshot labels and paths."""
+
+    snap_dir = run_dir / STEP_SNAPSHOT_DIR
+    if not snap_dir.exists():
+        return []
+
+    items: list[tuple[str, Path]] = []
+    for path in sorted(snap_dir.glob("*.db")):
+        items.append((path.stem, path))
+    return items
+
+
+def _load_step_metrics(run_dir: Path) -> pd.DataFrame:
+    metrics_path = run_dir / STEP_METRICS_FILE
+    if not metrics_path.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(metrics_path)
+    # Ensure ordering by round/label
+    if "round" in df.columns:
+        df = df.sort_values(by=["round", "label"], na_position="last")
+    return df
+
+
+def render_step_metrics(metrics: pd.DataFrame) -> None:
+    st.subheader("ステップ別メトリクス")
+    if metrics.empty:
+        st.info("step_metrics.csv が見つからないか、データがありません。")
+        return
+    df = metrics.copy()
+    # Normalize types
+    for col in df.columns:
+        if col not in {"label"}:
+            df[col] = pd.to_numeric(df[col], errors="ignore")
+
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+    # Cumulative view over steps
+    count_cols = [c for c in ["users", "posts", "comments", "likes", "follows"] if c in df.columns]
+    metric_cols = [c for c in ["modularity", "density", "average_clustering", "transitivity"] if c in df.columns]
+
+    if count_cols:
+        st.markdown("**累積カウントの推移**")
+        st.line_chart(df.set_index("label")[count_cols], height=260)
+        # 差分も表示（増減を把握する用）
+        delta_df = df[["label"] + count_cols].copy()
+        for col in count_cols:
+            delta_df[f"Δ{col}"] = delta_df[col].diff()
+        st.dataframe(delta_df[["label"] + [f"Δ{c}" for c in count_cols]], hide_index=True)
+
+    if metric_cols:
+        st.markdown("**ネットワーク指標の推移**")
+        st.line_chart(df.set_index("label")[metric_cols], height=260)
+
+
 def main() -> None:
     st.set_page_config(page_title="AI Agent Simulation Dashboard", layout="wide")
     st.title("AI Agent Simulation Dashboard (Streamlit)")
@@ -536,6 +746,23 @@ def main() -> None:
         default_path = _default_db_path()
         db_path = st.text_input("SQLiteのパス", value=str(default_path))
         st.caption(f"デフォルトは最新のrun (results/latest_run.txt) が指す {default_path}")
+        base_run_dir = _infer_run_dir(Path(db_path))
+
+        snapshot_choice = None
+        show_all_graphs = st.checkbox("スナップショット全体を可視化（制限なし）", value=False)
+        if base_run_dir and base_run_dir.exists():
+            snapshots = _list_snapshots(base_run_dir)
+            if snapshots:
+                st.markdown("---")
+                st.write("ステップスナップショット")
+                labels = ["latest (simulation.db)"] + [label for label, _ in snapshots]
+                selection = st.selectbox("表示するステップ", labels)
+                if selection != "latest (simulation.db)":
+                    snapshot_choice = dict(snapshots).get(selection)
+                    if snapshot_choice:
+                        db_path = str(snapshot_choice)
+                metrics_df = _load_step_metrics(base_run_dir)
+                render_step_metrics(metrics_df)
 
     db_path_resolved = Path(db_path)
     if not db_path_resolved.exists():
@@ -547,6 +774,7 @@ def main() -> None:
     render_summary(conn)
 
     render_metrics(conn)
+    render_ecs(conn)
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -555,9 +783,10 @@ def main() -> None:
         render_top_users(conn)
 
     render_follow_graph(conn)
-    render_like_graph(conn)
-    render_engagement_graph(conn)
+    render_like_graph(conn, show_all=show_all_graphs)
+    render_engagement_graph(conn, show_all=show_all_graphs)
     render_echo_chamber_graph(conn)
+    render_ecs_embedding_graph(conn)
 
 
 if __name__ == "__main__":
