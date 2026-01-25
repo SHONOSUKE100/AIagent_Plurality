@@ -21,6 +21,7 @@ from ..agents.agent_builder import (
     create_default_model,
     load_personas,
 )
+from oasis.social_agent.agent_environment import SocialEnvironment
 from ..evaluation.graph_base import calculate_modularity, compute_basic_metrics
 from ..evaluation.graph_data import load_like_graph_from_connection
 from ..algorithms import RecommendationType, create_recommender
@@ -34,6 +35,7 @@ from .embedding_store import (
 
 
 _FAILFAST_INSTALLED = False
+_SAFE_POSTS_PATCHED = False
 
 
 def _enable_fail_fast_actions() -> None:
@@ -59,6 +61,32 @@ def _enable_fail_fast_actions() -> None:
     _FAILFAST_INSTALLED = True
 
 
+def _patch_social_environment_posts() -> None:
+    """Monkey-patch SocialEnvironment.get_posts_env to be resilient when refresh() returns None."""
+    global _SAFE_POSTS_PATCHED
+    if _SAFE_POSTS_PATCHED:
+        return
+
+    original_get_posts_env = SocialEnvironment.get_posts_env
+
+    async def safe_get_posts_env(self) -> str:
+        try:
+            posts = await self.action.refresh()
+            if not posts or not isinstance(posts, dict):
+                return "After refreshing, there are no existing posts."
+            if posts.get("success"):
+                import json
+
+                posts_env = json.dumps(posts.get("posts", []), indent=4)
+                return self.posts_env_template.substitute(posts=posts_env)
+            return "After refreshing, there are no existing posts."
+        except Exception:
+            return "After refreshing, there are no existing posts."
+
+    SocialEnvironment.get_posts_env = safe_get_posts_env  # type: ignore[assignment]
+    _SAFE_POSTS_PATCHED = True
+
+
 def _install_recommender(platform, recommender) -> bool:
     """Try to attach our recommender to the platform; return True if successful."""
     attr_names = ["recommender", "rec_sys", "rec_system"]
@@ -72,6 +100,45 @@ def _install_recommender(platform, recommender) -> bool:
                 continue
     print(f"[recommender] could not attach; platform attrs: {dir(platform)}")
     return False
+
+
+def _disable_platform_cache_refresh(platform) -> None:
+    """Monkey patch cache refresh hooks on the platform/recommender to no-op to avoid heavy scans."""
+
+    async def _noop_async(*args, **kwargs):
+        return None
+
+    def _noop(*args, **kwargs):
+        return None
+
+    targets = [
+        "refresh_recommendation_system_cache",
+        "refresh_recommendation_cache",
+        "refresh_cache",
+        "refresh",
+        "update_rec_table",
+    ]
+
+    for name in targets:
+        if hasattr(platform, name):
+            try:
+                setattr(platform, name, _noop_async if callable(getattr(platform, name)) else _noop)
+                print(f"[cache] disabled platform.{name}")
+            except Exception:
+                pass
+
+    # Also patch nested recommender/rec_sys if they expose refresh methods
+    for nested_name in ["recommender", "rec_sys", "rec_system"]:
+        nested = getattr(platform, nested_name, None)
+        if nested is None:
+            continue
+        for name in targets:
+            if hasattr(nested, name):
+                try:
+                    setattr(nested, name, _noop_async if callable(getattr(nested, name)) else _noop)
+                    print(f"[cache] disabled platform.{nested_name}.{name}")
+                except Exception:
+                    pass
 
 
 def _prune_agent_memory(agent, keep_last: int = 10) -> None:
@@ -277,8 +344,11 @@ async def run_simulation(
         database_path=str(db_path),
     )
 
+    # Patch OASIS SocialEnvironment to avoid None responses causing crashes.
+    _patch_social_environment_posts()
     # Inject custom recommender into the platform to avoid the heavy default cache refresh.
     _install_recommender(env.platform, recommender)
+    _disable_platform_cache_refresh(env.platform)
 
     try:
         await env.reset()
