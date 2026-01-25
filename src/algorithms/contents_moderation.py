@@ -186,6 +186,30 @@ class CollaborativeFilteringRecommender(BaseRecommender):
         super().__init__(max_recommendations)
         self.similarity_threshold = similarity_threshold
         self.k_neighbors = k_neighbors
+        self._liked_by_user: Dict[int, List[str]] = {}
+        self._prepared_sig: Tuple[int, int] | None = None
+
+    def _prepare(
+        self,
+        interactions: Sequence[Interaction],
+        all_users: Sequence[User],
+    ) -> None:
+        last_sig = None
+        if interactions:
+            last = interactions[-1]
+            last_sig = (last.user_id, last.post_id, last.action, last.timestamp)
+
+        sig = (len(interactions), last_sig, len(all_users))
+        if self._prepared_sig == sig:
+            return
+
+        liked_by_user: Dict[int, List[str]] = {}
+        for interaction in interactions:
+            if interaction.action in ("like", "repost"):
+                liked_by_user.setdefault(interaction.user_id, []).append(interaction.post_id)
+
+        self._liked_by_user = liked_by_user
+        self._prepared_sig = sig
     
     def recommend(
         self,
@@ -198,19 +222,15 @@ class CollaborativeFilteringRecommender(BaseRecommender):
         if not available_posts:
             return []
         
+        self._prepare(interactions, all_users)
+
         # Find similar users based on embedding or opinion vector
         similar_users = self._find_similar_users(user, all_users)
-        
-        # Get posts liked by similar users
-        user_interactions = {i.user_id: [] for i in interactions}
-        for interaction in interactions:
-            if interaction.action in ('like', 'repost'):
-                user_interactions[interaction.user_id].append(interaction.post_id)
-        
+
         # Score posts based on similar users' interactions
         post_scores: Dict[str, float] = {}
         for similar_user, similarity in similar_users:
-            for post_id in user_interactions.get(similar_user.user_id, []):
+            for post_id in self._liked_by_user.get(similar_user.user_id, []):
                 if post_id not in post_scores:
                     post_scores[post_id] = 0.0
                 post_scores[post_id] += similarity

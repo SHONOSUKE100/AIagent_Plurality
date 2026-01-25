@@ -32,10 +32,18 @@ from .embedding_store import (
     embed_selected_items,
     generate_text_embeddings,
 )
+from ..algorithms.contents_moderation import (
+    Interaction as RecInteraction,
+    Post as RecPost,
+    User as RecUser,
+)
 
 
 _FAILFAST_INSTALLED = False
 _SAFE_POSTS_PATCHED = False
+_REBUILD_REC_EVERY = 2
+_REBUILD_MAX_CANDIDATE_POSTS = 10000
+_REBUILD_MAX_INTERACTIONS = 200000
 
 
 def _enable_fail_fast_actions() -> None:
@@ -61,27 +69,79 @@ def _enable_fail_fast_actions() -> None:
     _FAILFAST_INSTALLED = True
 
 
-def _patch_social_environment_posts() -> None:
-    """Monkey-patch SocialEnvironment.get_posts_env to be resilient when refresh() returns None."""
+def _patch_social_environment_posts(
+    db_path: Path, *, max_posts: int = 200, max_content_chars: int = 280
+) -> None:
+    """Monkey-patch SocialEnvironment.get_posts_env to avoid calling action.refresh().
+
+    refresh() triggers a heavy platform-side cache rebuild. Instead, read recent
+    posts directly from SQLite and cache the formatted env keyed by MAX(post_id).
+    """
     global _SAFE_POSTS_PATCHED
     if _SAFE_POSTS_PATCHED:
         return
 
     original_get_posts_env = SocialEnvironment.get_posts_env
 
+    def _max_post_id() -> int:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT MAX(post_id) FROM post").fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+
+    def _fetch_recent_posts() -> list[dict]:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT post_id, user_id, content, created_at, num_likes, num_dislikes
+                FROM post
+                ORDER BY post_id DESC
+                LIMIT ?
+                """,
+                (max_posts,),
+            ).fetchall()
+
+        posts = []
+        for row in rows:
+            content = row["content"] or ""
+            if max_content_chars and len(content) > max_content_chars:
+                content = content[:max_content_chars] + "..."
+            posts.append(
+                {
+                    "post_id": str(row["post_id"]),
+                    "user_id": int(row["user_id"]),
+                    "content": content,
+                    "created_at": str(row["created_at"]),
+                    "num_likes": int(row["num_likes"] or 0),
+                    "num_dislikes": int(row["num_dislikes"] or 0),
+                }
+            )
+
+        posts.reverse()
+        return posts
+
     async def safe_get_posts_env(self) -> str:
         try:
-            posts = await self.action.refresh()
-            if not posts or not isinstance(posts, dict):
-                return "After refreshing, there are no existing posts."
-            if posts.get("success"):
-                import json
+            latest = _max_post_id()
+            cache_key = getattr(self, "_posts_env_cache_key", None)
+            if cache_key == latest and hasattr(self, "_posts_env_cache_value"):
+                return getattr(self, "_posts_env_cache_value")
 
-                posts_env = json.dumps(posts.get("posts", []), indent=4)
-                return self.posts_env_template.substitute(posts=posts_env)
-            return "After refreshing, there are no existing posts."
+            posts = _fetch_recent_posts()
+            if not posts:
+                env_text = "There are no existing posts."
+            else:
+                posts_env = json.dumps(posts, ensure_ascii=False, indent=2)
+                env_text = self.posts_env_template.substitute(posts=posts_env)
+
+            setattr(self, "_posts_env_cache_key", latest)
+            setattr(self, "_posts_env_cache_value", env_text)
+            return env_text
         except Exception:
-            return "After refreshing, there are no existing posts."
+            try:
+                return await original_get_posts_env(self)
+            except Exception:
+                return "There are no existing posts."
 
     SocialEnvironment.get_posts_env = safe_get_posts_env  # type: ignore[assignment]
     _SAFE_POSTS_PATCHED = True
@@ -103,7 +163,9 @@ def _install_recommender(platform, recommender) -> bool:
 
 
 def _disable_platform_cache_refresh(platform) -> None:
-    """Monkey patch cache refresh hooks on the platform/recommender to no-op to avoid heavy scans."""
+    """Monkey patch cache refresh hooks on the platform/recommender to no-op."""
+
+    import inspect
 
     async def _noop_async(*args, **kwargs):
         return None
@@ -111,34 +173,201 @@ def _disable_platform_cache_refresh(platform) -> None:
     def _noop(*args, **kwargs):
         return None
 
-    targets = [
+    target_names = {
         "refresh_recommendation_system_cache",
         "refresh_recommendation_cache",
         "refresh_cache",
         "refresh",
         "update_rec_table",
-    ]
+    }
 
-    for name in targets:
-        if hasattr(platform, name):
-            try:
-                setattr(platform, name, _noop_async if callable(getattr(platform, name)) else _noop)
-                print(f"[cache] disabled platform.{name}")
-            except Exception:
-                pass
+    def patch_obj(obj, prefix: str):
+        for name in target_names:
+            if hasattr(obj, name):
+                try:
+                    fn = getattr(obj, name)
+                    is_async = inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(
+                        getattr(type(obj), name, None)
+                    )
+                    if is_async:
+                        setattr(obj, name, _noop_async)
+                    else:
+                        setattr(obj, name, _noop)
+                    print(f"[cache] disabled {prefix}.{name}")
+                except Exception:
+                    pass
 
-    # Also patch nested recommender/rec_sys if they expose refresh methods
-    for nested_name in ["recommender", "rec_sys", "rec_system"]:
+    patch_obj(platform, "platform")
+
+    for nested_name in ("social", "twitter", "client", "engine", "rec_sys", "rec_system", "recommender"):
+        nested = getattr(platform, nested_name, None)
+        if nested is not None:
+            patch_obj(nested, f"platform.{nested_name}")
+
+    for nested_name in ("social", "twitter"):
         nested = getattr(platform, nested_name, None)
         if nested is None:
             continue
-        for name in targets:
-            if hasattr(nested, name):
+        for nested2 in ("twitter", "platform", "client", "engine", "rec_sys", "rec_system"):
+            obj2 = getattr(nested, nested2, None)
+            if obj2 is not None:
+                patch_obj(obj2, f"platform.{nested_name}.{nested2}")
+
+
+def _rebuild_rec_table(
+    db_path: Path,
+    recommender,
+    max_recommendations: int | None = None,
+    *,
+    max_users: int | None = None,
+    max_candidate_posts: int = 10000,
+    max_recent_interactions: int = 200000,
+) -> None:
+    """Recompute and persist rec table using the injected recommender (capped)."""
+
+    conn: sqlite3.Connection | None = None
+    try:
+        import numpy as np  # Local import to avoid hard dependency for skip_embeddings
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA cache_size=-200000;")
+
+        users_query = "SELECT user_id, bio FROM user"
+        params: list[int] = []
+        if max_users is not None:
+            users_query += " LIMIT ?"
+            params.append(int(max_users))
+        users_rows = conn.execute(users_query, params).fetchall()
+
+        rec_name = recommender.__class__.__name__.lower()
+        needs_embeddings = ("collaborative" in rec_name) or ("bridging" in rec_name)
+
+        embed_rows: dict[int, str] = {}
+        if needs_embeddings:
+            embed_rows = {
+                int(row["user_id"]): row["embedding"]
+                for row in conn.execute("SELECT user_id, embedding FROM user_embedding")
+            }
+        users: list[RecUser] = []
+        for row in users_rows:
+            uid = int(row["user_id"])
+            embedding = None
+            if needs_embeddings and uid in embed_rows:
                 try:
-                    setattr(nested, name, _noop_async if callable(getattr(nested, name)) else _noop)
-                    print(f"[cache] disabled platform.{nested_name}.{name}")
+                    embedding = np.array(json.loads(embed_rows[uid]), dtype=np.float32)
                 except Exception:
-                    pass
+                    embedding = None
+            users.append(RecUser(user_id=uid, bio=row["bio"] or "", embedding=embedding))
+
+        post_rows = conn.execute(
+            """
+            SELECT post_id, user_id, created_at, num_likes, num_dislikes
+            FROM post
+            ORDER BY post_id DESC
+            LIMIT ?
+            """,
+            (int(max_candidate_posts),),
+        ).fetchall()
+        post_embed_map: dict[int, str] = {}
+        if needs_embeddings:
+            post_embed_map = {
+                int(row["post_id"]): row["embedding"]
+                for row in conn.execute(
+                    """
+                    SELECT post_id, embedding
+                    FROM post_embedding
+                    WHERE post_id IN (
+                        SELECT post_id FROM post ORDER BY post_id DESC LIMIT ?
+                    )
+                    """,
+                    (int(max_candidate_posts),),
+                )
+            }
+        posts: list[RecPost] = []
+        for row in post_rows:
+            pid = int(row["post_id"])
+            emb = None
+            if needs_embeddings and pid in post_embed_map:
+                try:
+                    emb = np.array(json.loads(post_embed_map[pid]), dtype=np.float32)
+                except Exception:
+                    emb = None
+            posts.append(
+                RecPost(
+                    post_id=str(pid),
+                    user_id=int(row["user_id"]),
+                    content="",
+                    created_at=str(row["created_at"]),
+                    num_likes=int(row["num_likes"] or 0),
+                    num_dislikes=int(row["num_dislikes"] or 0),
+                    embedding=emb,
+                )
+            )
+
+        interactions: list[RecInteraction] = []
+        like_rows = conn.execute(
+            """
+            SELECT user_id, post_id, created_at
+            FROM 'like'
+            ORDER BY rowid DESC
+            LIMIT ?
+            """,
+            (int(max_recent_interactions),),
+        ).fetchall()
+        for row in like_rows:
+            interactions.append(
+                RecInteraction(
+                    user_id=int(row["user_id"]),
+                    post_id=str(row["post_id"]),
+                    action="like",
+                    timestamp=str(row["created_at"]),
+                )
+            )
+        comment_rows = conn.execute(
+            """
+            SELECT user_id, post_id, created_at
+            FROM comment
+            ORDER BY rowid DESC
+            LIMIT ?
+            """,
+            (int(max_recent_interactions),),
+        ).fetchall()
+        for row in comment_rows:
+            interactions.append(
+                RecInteraction(
+                    user_id=int(row["user_id"]),
+                    post_id=str(row["post_id"]),
+                    action="comment",
+                    timestamp=str(row["created_at"]),
+                )
+            )
+
+        if not users or not posts:
+            return
+
+        rows = []
+        limit = max_recommendations or getattr(recommender, "max_recommendations", 10)
+        for user in users:
+            try:
+                recs = recommender.recommend(user, posts, interactions, users)
+            except Exception:
+                recs = []
+            for pid in recs[:limit]:
+                rows.append((user.user_id, int(pid)))
+
+        with conn:
+            conn.execute("DELETE FROM rec")
+            if rows:
+                conn.executemany("INSERT INTO rec (user_id, post_id) VALUES (?, ?)", rows)
+    except Exception as exc:
+        print(f"[recommender] failed to rebuild rec table: {exc}")
+    finally:
+        if conn:
+            conn.close()
 
 
 def _prune_agent_memory(agent, keep_last: int = 10) -> None:
@@ -344,11 +573,17 @@ async def run_simulation(
         database_path=str(db_path),
     )
 
-    # Patch OASIS SocialEnvironment to avoid None responses causing crashes.
-    _patch_social_environment_posts()
+    # Patch OASIS SocialEnvironment to avoid heavy refreshes for posts_env.
+    _patch_social_environment_posts(db_path, max_posts=200, max_content_chars=280)
     # Inject custom recommender into the platform to avoid the heavy default cache refresh.
     _install_recommender(env.platform, recommender)
     _disable_platform_cache_refresh(env.platform)
+    _rebuild_rec_table(
+        db_path,
+        recommender,
+        max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
+        max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
+    )
 
     try:
         await env.reset()
@@ -368,13 +603,19 @@ async def run_simulation(
                 post_ids=new_posts,
                 model=embedding_model,
                 batch_size=embedding_batch_size,
-        )
+            )
 
         _capture_step_metrics(
             db_path=db_path,
             metrics_path=step_metrics_path,
             label="after_seeding",
             round_num=0,
+        )
+        _rebuild_rec_table(
+            db_path,
+            recommender,
+            max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
+            max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
         )
         _snapshot_database(
             db_path=db_path,
@@ -394,6 +635,13 @@ async def run_simulation(
                 embedding_batch_size=embedding_batch_size,
                 max_memory_messages=max_memory_messages,
             )
+            if (round_num + 1) % _REBUILD_REC_EVERY == 0 or (round_num + 1 == llm_rounds):
+                _rebuild_rec_table(
+                    db_path,
+                    recommender,
+                    max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
+                    max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
+                )
             _capture_step_metrics(
                 db_path=db_path,
                 metrics_path=step_metrics_path,
