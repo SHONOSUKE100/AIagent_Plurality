@@ -4,6 +4,23 @@ run = "uv run main.py --persona-path {{ persona_path | default(value=\"data/pers
 [tasks.random]
 run = "uv run main.py --persona-path data/persona/persona_100.json --seeding-path data/seeding.json --seed-post-count 20 --llm-rounds 5 --agent-action-ratio 0.２ --recommendation-type random --output-dir results --run-name random-100agent-100round --note \"randomでテスト\" --model-type gpt-5-nano-2025-08-07 --embedding-model text-embedding-3-small --embedding-batch-size 16"
 
+[tasks.collaborative]
+run = """
+uv run main.py \
+  --persona-path data/persona/persona_100.json \
+  --seeding-path data/seeding.json \
+  --seed-post-count 20 \
+  --llm-rounds 20 \
+  --agent-action-ratio 0.3 \
+  --recommendation-type collaborative \
+  --output-dir results \
+  --run-name random-100agent-100round-collaborative \
+  --note "randomでテスト" \
+  --model-type gpt-5-nano-2025-08-07 \
+  --embedding-model text-embedding-3-small \
+  --embedding-batch-size 16
+"""
+
 [tasks.neo4j-up]
 run = "docker compose up neo4j -d"
 

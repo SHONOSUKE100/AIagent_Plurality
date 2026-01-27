@@ -175,6 +175,10 @@ class CollaborativeFilteringRecommender(BaseRecommender):
     Recommends posts that similar users have liked.
     This algorithm may reinforce echo chambers by recommending
     content that users with similar opinions have engaged with.
+    To avoid mode collapse (everyone seeing the same post), we mix in:
+    - recency weighting (fresh content is preferred),
+    - inverse-frequency dampening (popular posts get penalized),
+    - a small exploration budget (random unseen posts).
     """
     
     def __init__(
@@ -182,11 +186,16 @@ class CollaborativeFilteringRecommender(BaseRecommender):
         max_recommendations: int = 10,
         similarity_threshold: float = 0.5,
         k_neighbors: int = 5,
+        explore_ratio: float = 0.3,
+        recency_half_life: float = 1000.0,
     ):
         super().__init__(max_recommendations)
         self.similarity_threshold = similarity_threshold
         self.k_neighbors = k_neighbors
+        self.explore_ratio = explore_ratio
+        self.recency_half_life = recency_half_life
         self._liked_by_user: Dict[int, List[str]] = {}
+        self._post_latest_ts: Dict[str, float] = {}
         self._prepared_sig: Tuple[int, int] | None = None
 
     def _prepare(
@@ -204,11 +213,21 @@ class CollaborativeFilteringRecommender(BaseRecommender):
             return
 
         liked_by_user: Dict[int, List[str]] = {}
+        post_latest_ts: Dict[str, float] = {}
         for interaction in interactions:
             if interaction.action in ("like", "repost"):
                 liked_by_user.setdefault(interaction.user_id, []).append(interaction.post_id)
+            try:
+                # Store latest timestamp as float (unix-like)
+                ts_val = float(interaction.timestamp)
+                prev = post_latest_ts.get(interaction.post_id, 0.0)
+                if ts_val > prev:
+                    post_latest_ts[interaction.post_id] = ts_val
+            except Exception:
+                continue
 
         self._liked_by_user = liked_by_user
+        self._post_latest_ts = post_latest_ts
         self._prepared_sig = sig
     
     def recommend(
@@ -229,11 +248,18 @@ class CollaborativeFilteringRecommender(BaseRecommender):
 
         # Score posts based on similar users' interactions
         post_scores: Dict[str, float] = {}
+        freq: Dict[str, int] = {}
+        for liked_list in self._liked_by_user.values():
+            for pid in liked_list:
+                freq[pid] = freq.get(pid, 0) + 1
+
         for similar_user, similarity in similar_users:
             for post_id in self._liked_by_user.get(similar_user.user_id, []):
                 if post_id not in post_scores:
                     post_scores[post_id] = 0.0
-                post_scores[post_id] += similarity
+                freshness = self._compute_recency(post_id)
+                pop_penalty = 1.0 / (1.0 + np.log1p(freq.get(post_id, 1)))
+                post_scores[post_id] += similarity * freshness * pop_penalty
         
         # If no collaborative data, fall back to random
         if not post_scores:
@@ -248,8 +274,16 @@ class CollaborativeFilteringRecommender(BaseRecommender):
             if pid in available_post_ids
         ]
         scored_posts.sort(key=lambda x: x[1], reverse=True)
-        
-        return [pid for pid, _ in scored_posts[:self.max_recommendations]]
+        top_k = [pid for pid, _ in scored_posts[: self.max_recommendations]]
+
+        # Exploration: add a small slice of random unseen posts to fight collapse
+        explore_k = max(1, int(self.max_recommendations * self.explore_ratio))
+        seen = set(top_k)
+        unseen_candidates = [p.post_id for p in available_posts if p.post_id not in seen]
+        if unseen_candidates and explore_k > 0:
+            explore_sample = random.sample(unseen_candidates, min(explore_k, len(unseen_candidates)))
+            top_k = (top_k + explore_sample)[: self.max_recommendations]
+        return top_k
     
     def _find_similar_users(
         self, 
@@ -277,6 +311,22 @@ class CollaborativeFilteringRecommender(BaseRecommender):
         # Return top k neighbors
         similarities.sort(key=lambda x: x[1], reverse=True)
         return similarities[:self.k_neighbors]
+
+    def _compute_recency(self, post_id: str) -> float:
+        """Exponential decay based on the latest interaction timestamp."""
+        ts = self._post_latest_ts.get(post_id)
+        if ts is None:
+            return 1.0
+        try:
+            import time
+
+            now = time.time()
+            # If timestamps are seconds-like numeric strings, decay with half-life
+            age = max(0.0, now - ts)
+            decay = 0.5 ** (age / self.recency_half_life) if self.recency_half_life > 0 else 1.0
+            return float(decay)
+        except Exception:
+            return 1.0
 
 
 class BridgingRecommender(BaseRecommender):

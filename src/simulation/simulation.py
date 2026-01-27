@@ -520,6 +520,7 @@ async def run_simulation(
     step_metrics_path: Path | str | None = None,
     step_snapshot_dir: Path | str | None = None,
     max_memory_messages: int = 5,
+    warmup_random_rounds: int = 10,
     ) -> None:
     """Run the social simulation once using personas from ``persona_path``.
     
@@ -540,6 +541,9 @@ async def run_simulation(
         step_metrics_path: Optional CSV path to record per-step graph metrics.
         step_snapshot_dir: Optional directory to save SQLite snapshots after each step.
         max_memory_messages: Number of past messages to retain in agent memory (smaller saves RAM).
+        warmup_random_rounds: Use random recommendations for the first N rounds
+            before switching to the requested algorithm to inject exploration
+            and reduce early collapse.
 
     Notes:
         - Embeddings are generated incrementally (bios after reset, seeded posts
@@ -561,7 +565,11 @@ async def run_simulation(
     seeding_data = load_seeding_data(seeding_path)
     
     # Create the recommender for custom content moderation
-    recommender = create_recommender(recommendation_type)
+    recommender_main = create_recommender(recommendation_type)
+    warmup_recommender = None
+    if warmup_random_rounds > 0 and recommendation_type != RecommendationType.RANDOM:
+        warmup_recommender = create_recommender(RecommendationType.RANDOM)
+    active_recommender = warmup_recommender or recommender_main
 
     db_path = Path(database_path)
     if db_path.exists():
@@ -576,11 +584,11 @@ async def run_simulation(
     # Patch OASIS SocialEnvironment to avoid heavy refreshes for posts_env.
     _patch_social_environment_posts(db_path, max_posts=200, max_content_chars=280)
     # Inject custom recommender into the platform to avoid the heavy default cache refresh.
-    _install_recommender(env.platform, recommender)
+    _install_recommender(env.platform, active_recommender)
     _disable_platform_cache_refresh(env.platform)
     _rebuild_rec_table(
         db_path,
-        recommender,
+        active_recommender,
         max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
         max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
     )
@@ -613,7 +621,7 @@ async def run_simulation(
         )
         _rebuild_rec_table(
             db_path,
-            recommender,
+            active_recommender,
             max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
             max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
         )
@@ -624,10 +632,21 @@ async def run_simulation(
         )
 
         for round_num in range(llm_rounds):
+            # Switch from warmup random to target recommender after warmup_random_rounds
+            if warmup_recommender and round_num >= warmup_random_rounds:
+                if active_recommender is not recommender_main:
+                    active_recommender = recommender_main
+                    _install_recommender(env.platform, active_recommender)
+                    _rebuild_rec_table(
+                        db_path,
+                        active_recommender,
+                        max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
+                        max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
+                    )
             await _llm_round(
                 env,
                 agent_action_ratio,
-                recommender,
+                active_recommender,
                 round_num,
                 incremental_embeddings=incremental_embeddings,
                 db_path=db_path,
@@ -638,7 +657,7 @@ async def run_simulation(
             if (round_num + 1) % _REBUILD_REC_EVERY == 0 or (round_num + 1 == llm_rounds):
                 _rebuild_rec_table(
                     db_path,
-                    recommender,
+                    active_recommender,
                     max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
                     max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
                 )

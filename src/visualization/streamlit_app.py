@@ -27,6 +27,14 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.evaluation.graph_base import calculate_modularity, compute_basic_metrics
 from src.evaluation.graph_data import load_like_graph_from_connection
 from src.evaluation.ecs import compute_ecs_from_db
+from src.evaluation.echo_pipeline import EchoGAEResult, run_echo_gae_pipeline
+from src.visualization.echo_visualization import (
+    plot_ecs_bars,
+    plot_embeddings_plotly,
+    plot_forceatlas2,
+    plot_user_scores,
+    project_embeddings,
+)
 import matplotlib_fontja
 
 
@@ -493,9 +501,80 @@ def render_ecs(conn: sqlite3.Connection) -> None:
         ax.set_ylim(0, 1)
         ax.grid(alpha=0.3)
         ax.set_title("コミュニティ別 ECS* とサイズ")
-        st.pyplot(fig, use_container_width=True)
+    st.pyplot(fig, use_container_width=True)
 
     st.bar_chart(df.set_index("community")[["ECS*"]], height=220)
+
+
+@st.cache_resource(show_spinner=True)
+def _cache_echo_gae(
+    db_path: str,
+    epochs: int,
+    neg_ratio: float,
+    community_method: str,
+    min_edge_weight: float,
+) -> EchoGAEResult:
+    """Cache EchoGAE training so UI interactions stay fast."""
+
+    conn = _connect(db_path)
+    return run_echo_gae_pipeline(
+        conn,
+        epochs=epochs,
+        neg_ratio=neg_ratio,
+        community_method=community_method,
+        min_edge_weight=min_edge_weight,
+    )
+
+
+def render_echo_gae_dashboard(db_path: str) -> None:
+    st.subheader("EchoGAE + ECS（論文準拠）")
+    cols = st.columns(4)
+    with cols[0]:
+        epochs = st.number_input("EchoGAE epochs", min_value=10, max_value=400, value=50, step=10)
+    with cols[1]:
+        neg_ratio = st.slider("Negative sampling ratio", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
+    with cols[2]:
+        community_method = st.selectbox("コミュニティ検出", ["louvain", "leiden", "greedy"], index=0)
+    with cols[3]:
+        min_edge_weight = st.number_input("いいね閾値（重み）", min_value=1.0, max_value=10.0, value=1.0, step=1.0)
+
+    projection_method = st.radio("埋め込みの次元圧縮", ["umap", "tsne"], horizontal=True, index=0)
+    color_mode = st.radio("色付け", ["コミュニティ", "s(u)"], horizontal=True, index=0)
+
+    try:
+        result = _cache_echo_gae(str(db_path), int(epochs), float(neg_ratio), community_method, float(min_edge_weight))
+    except ValueError as exc:
+        st.info(str(exc))
+        return
+    except Exception as exc:
+        st.error(f"EchoGAEの計算に失敗しました: {exc}")
+        return
+
+    coords = project_embeddings(result.embeddings, method=projection_method)
+    st.metric("ECS(Ω)", f"{result.ecs_global:.4f}")
+
+    tab1, tab2, tab3 = st.tabs(["Embedding", "ForceAtlas2", "ECS スコア"])
+
+    with tab1:
+        fig = plot_embeddings_plotly(
+            coords,
+            result.user_ids,
+            result.communities,
+            user_scores=result.user_scores if color_mode == "s(u)" else None,
+            title=f"EchoGAE embeddings ({projection_method})",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab2:
+        fa_fig = plot_forceatlas2(result.graph, result.communities, iterations=800)
+        st.pyplot(fa_fig, use_container_width=True)
+
+    with tab3:
+        ecs_fig = plot_ecs_bars(result.ecs_per_comm, result.ecs_global)
+        st.pyplot(ecs_fig, use_container_width=True)
+
+        scatter_fig = plot_user_scores(coords, result.user_ids, result.user_scores)
+        st.pyplot(scatter_fig, use_container_width=True)
 
 
 def render_ecs_embedding_graph(conn: sqlite3.Connection) -> None:
@@ -513,11 +592,14 @@ def render_ecs_embedding_graph(conn: sqlite3.Connection) -> None:
     embedded_users = set(embeddings)
     if not embedded_users:
         return
+
+    min_weight_threshold = 2
     edges_embedded = [
         (int(u), int(v), w)
         for u, v, w in edges
-        if int(u) in embedded_users and int(v) in embedded_users
+        if int(u) in embedded_users and int(v) in embedded_users and w >= min_weight_threshold
     ]
+
     nodes_embedded = [n for n in nodes if int(n) in embedded_users]
     if not nodes_embedded or not edges_embedded:
         return
@@ -775,6 +857,7 @@ def main() -> None:
 
     render_metrics(conn)
     render_ecs(conn)
+    render_echo_gae_dashboard(str(db_path_resolved))
 
     col1, col2 = st.columns([1, 1])
     with col1:
