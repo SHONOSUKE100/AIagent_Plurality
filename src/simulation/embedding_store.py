@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -17,7 +18,9 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 def _ensure_embedding_tables(db_path: Path) -> None:
     """Create embedding tables if they do not already exist."""
 
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(db_path, timeout=30) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=30000;")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS post_embedding (
@@ -135,14 +138,24 @@ async def _embed_and_store(
             for (item_id, _), embedding in zip(batch, embeddings, strict=True)
         ]
 
-        with sqlite3.connect(db_path) as conn:
-            conn.executemany(
-                f"""
-                INSERT OR REPLACE INTO {table} ({id_column}, model, embedding, embedded_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                """,
-                payload,
-            )
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                with sqlite3.connect(db_path, timeout=30) as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    conn.execute("PRAGMA busy_timeout=30000;")
+                    conn.executemany(
+                        f"""
+                        INSERT OR REPLACE INTO {table} ({id_column}, model, embedding, embedded_at)
+                        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        payload,
+                    )
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or attempt >= max_retries - 1:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
             conn.commit()
         written += len(payload)
         print(f"[embedding] Stored {len(payload)} {label} embeddings (total {written})")

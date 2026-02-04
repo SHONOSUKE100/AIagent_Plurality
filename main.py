@@ -2,6 +2,7 @@ import argparse
 import csv
 import subprocess
 import shutil
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -46,11 +47,16 @@ def snapshot_config_files(run_dir: Path) -> list[str]:
     return copied
 
 
-def write_run_arguments(run_dir: Path, args: argparse.Namespace) -> Path:
+def write_run_arguments(
+    run_dir: Path,
+    args: argparse.Namespace,
+    *,
+    filename: str = "run_args.yaml",
+) -> Path:
     """Persist the parsed CLI arguments for reproducibility."""
 
     config_dir = _ensure_config_dir(run_dir)
-    args_path = config_dir / "run_args.yaml"
+    args_path = config_dir / filename
     normalized = {
         key: str(value) if isinstance(value, Path) else value
         for key, value in vars(args).items()
@@ -144,6 +150,7 @@ def update_index(entry: Dict[str, Any]) -> None:
         "persona_copy",
         "seed_post_count",
         "llm_rounds",
+        "warmup_random_rounds",
         "database_path",
         "embedding_model",
         "embedding_batch_size",
@@ -155,6 +162,9 @@ def update_index(entry: Dict[str, Any]) -> None:
         "config_snapshot",
         "step_metrics_file",
         "step_snapshot_dir",
+        "resume_run_dir",
+        "resumed_from_round",
+        "resumed_from_snapshot",
     ]
 
     existing_rows: list[Dict[str, Any]] = []
@@ -172,6 +182,53 @@ def update_index(entry: Dict[str, Any]) -> None:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(existing_rows)
+
+
+def _detect_last_round_from_snapshots(snapshot_dir: Path) -> int | None:
+    if not snapshot_dir.exists():
+        return None
+
+    max_round: int | None = None
+    for path in snapshot_dir.glob("round_*.db"):
+        match = re.fullmatch(r"round_(\d+)\.db", path.name)
+        if not match:
+            continue
+        value = int(match.group(1))
+        max_round = value if max_round is None else max(max_round, value)
+
+    if max_round is not None:
+        return max_round
+    if (snapshot_dir / "after_seeding.db").exists():
+        return 0
+    return None
+
+
+def _detect_last_round_from_metrics(metrics_path: Path) -> int | None:
+    if not metrics_path.exists():
+        return None
+
+    max_round: int | None = None
+    with metrics_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            value = row.get("round")
+            if value is None or value == "":
+                continue
+            try:
+                round_num = int(float(value))
+            except ValueError:
+                continue
+            max_round = round_num if max_round is None else max(max_round, round_num)
+    return max_round
+
+
+def _infer_round_from_snapshot(snapshot_path: Path) -> int | None:
+    if snapshot_path.name == "after_seeding.db":
+        return 0
+    match = re.fullmatch(r"round_(\d+)\.db", snapshot_path.name)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def main() -> None:
@@ -193,6 +250,19 @@ def main() -> None:
     parser.add_argument(
         "--run-name",
         help="Optional run name. Defaults to timestamp.",
+    )
+    parser.add_argument(
+        "--resume-run-dir",
+        help="Resume an interrupted run from an existing results/<run> directory.",
+    )
+    parser.add_argument(
+        "--resume-from-round",
+        type=int,
+        help="Last fully completed round number to resume from (overrides auto-detect).",
+    )
+    parser.add_argument(
+        "--resume-from-snapshot",
+        help="Path to a snapshot DB (e.g., step_snapshots/round_47.db) to resume from.",
     )
     parser.add_argument(
         "--note",
@@ -234,7 +304,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--model-type",
-        default="gpt-4o",
+        default="gpt-5-nano-2025-08-07",
         help="Model identifier to use (e.g., gpt-4o, gpt-4o-mini, gpt-5-nano).",
     )
     parser.add_argument(
@@ -265,6 +335,30 @@ def main() -> None:
         action="store_true",
         help="Skip the embedding step to avoid extra API usage.",
     )
+    parser.add_argument(
+        "--warmup-random-rounds",
+        type=int,
+        default=0,
+        help="Use random recommender for the first N rounds, then switch to the chosen recommender (exploration warm-up).",
+    )
+    parser.add_argument(
+        "--rate-limit-initial-delay-sec",
+        type=int,
+        default=600,
+        help="Initial backoff when rate limited (seconds). Default 600 (10 minutes).",
+    )
+    parser.add_argument(
+        "--rate-limit-retry-delay-sec",
+        type=int,
+        default=300,
+        help="Backoff between subsequent rate limit retries (seconds). Default 300 (5 minutes).",
+    )
+    parser.add_argument(
+        "--max-rate-limit-retries",
+        type=int,
+        default=50,
+        help="Maximum rate limit retries before failing the run.",
+    )
 
     args = parser.parse_args()
 
@@ -272,18 +366,83 @@ def main() -> None:
     if not persona_path.exists():
         raise FileNotFoundError(f"Persona file not found: {persona_path}")
 
-    if args.database_path:
-        database_path = Path(args.database_path)
-        run_dir = database_path.parent
-        run_dir.mkdir(parents=True, exist_ok=True)
+    resume_run_dir = Path(args.resume_run_dir) if args.resume_run_dir else None
+    resume_snapshot_path: Path | None = (
+        Path(args.resume_from_snapshot) if args.resume_from_snapshot else None
+    )
+    resume_last_round: int | None = args.resume_from_round
+
+    if resume_run_dir:
+        if not resume_run_dir.exists():
+            raise FileNotFoundError(f"resume-run-dir not found: {resume_run_dir}")
+        run_dir = resume_run_dir
+        if args.database_path:
+            candidate = Path(args.database_path)
+            if run_dir not in candidate.parents and candidate.parent != run_dir:
+                raise ValueError(
+                    "When using --resume-run-dir, --database-path must be inside that directory."
+                )
+            database_path = candidate
+        else:
+            database_path = run_dir / "simulation.db"
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     else:
-        base_dir = Path(args.output_dir)
-        run_dir, timestamp = create_run_directory(base_dir, args.run_name)
-        database_path = run_dir / "simulation.db"
+        if args.database_path:
+            database_path = Path(args.database_path)
+            run_dir = database_path.parent
+            run_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        else:
+            base_dir = Path(args.output_dir)
+            run_dir, timestamp = create_run_directory(base_dir, args.run_name)
+            database_path = run_dir / "simulation.db"
+
+    if resume_run_dir:
+        snapshot_dir = run_dir / "step_snapshots"
+        metrics_path = run_dir / "step_metrics.csv"
+        detected_from_snapshots = _detect_last_round_from_snapshots(snapshot_dir)
+        detected_from_metrics = _detect_last_round_from_metrics(metrics_path)
+
+        if resume_snapshot_path is None:
+            if detected_from_snapshots is not None:
+                if detected_from_snapshots > 0:
+                    resume_snapshot_path = snapshot_dir / f"round_{detected_from_snapshots}.db"
+                else:
+                    candidate = snapshot_dir / "after_seeding.db"
+                    resume_snapshot_path = candidate if candidate.exists() else None
+            if resume_snapshot_path is None and database_path.exists():
+                resume_snapshot_path = database_path
+
+        if resume_snapshot_path is None or not resume_snapshot_path.exists():
+            raise FileNotFoundError(
+                "Could not find a resume snapshot. Specify --resume-from-snapshot explicitly."
+            )
+
+        if resume_last_round is None:
+            resume_last_round = _infer_round_from_snapshot(resume_snapshot_path)
+        if resume_last_round is None:
+            resume_last_round = detected_from_snapshots
+        if resume_last_round is None:
+            resume_last_round = detected_from_metrics
+        if resume_last_round is None:
+            resume_last_round = 0
+
+        if resume_last_round < 0:
+            raise ValueError("--resume-from-round must be non-negative.")
+        if resume_last_round > args.llm_rounds:
+            raise ValueError(
+                f"resume-from-round ({resume_last_round}) exceeds llm-rounds ({args.llm_rounds})."
+            )
+
+        print(
+            f"[resume] run_dir={run_dir} snapshot={resume_snapshot_path.name} last_round={resume_last_round}"
+        )
 
     config_snapshot = snapshot_config_files(run_dir)
-    args_path = write_run_arguments(run_dir, args)
+    run_args_filename = (
+        f"run_args_resume_{timestamp}.yaml" if resume_run_dir else "run_args.yaml"
+    )
+    args_path = write_run_arguments(run_dir, args, filename=run_args_filename)
     neo4j_config_path = write_neo4j_config(run_dir)
 
     persona_copy = None
@@ -324,6 +483,12 @@ def main() -> None:
             step_metrics_path=run_dir / "step_metrics.csv",
             step_snapshot_dir=run_dir / "step_snapshots",
             max_memory_messages=args.max_memory_messages,
+            warmup_random_rounds=args.warmup_random_rounds,
+            resume_from_snapshot=resume_snapshot_path,
+            resume_last_completed_round=resume_last_round,
+            rate_limit_initial_delay_sec=args.rate_limit_initial_delay_sec,
+            rate_limit_retry_delay_sec=args.rate_limit_retry_delay_sec,
+            max_rate_limit_retries=args.max_rate_limit_retries,
         )
     except Exception as exc:  # noqa: BLE001 - capture all errors for metadata recording
         status = "failed"
@@ -340,6 +505,7 @@ def main() -> None:
             "seeding_path": str(Path(args.seeding_path).resolve()),
             "seed_post_count": args.seed_post_count,
             "llm_rounds": args.llm_rounds,
+            "warmup_random_rounds": args.warmup_random_rounds,
             "agent_action_ratio": args.agent_action_ratio,
             "recommendation_type": args.recommendation_type,
             "database_path": str(resolved_database),
@@ -355,6 +521,9 @@ def main() -> None:
             "neo4j_config_file": str(neo4j_config_path.relative_to(run_dir)),
             "step_metrics_file": "step_metrics.csv",
             "step_snapshot_dir": "step_snapshots",
+            "resume_run_dir": str(resume_run_dir.resolve()) if resume_run_dir else None,
+            "resumed_from_round": resume_last_round,
+            "resumed_from_snapshot": str(resume_snapshot_path.resolve()) if resume_snapshot_path else None,
             "git": git_info,
         }
 
@@ -367,6 +536,7 @@ def main() -> None:
             "persona_copy": metadata["persona_copy"],
             "seed_post_count": metadata["seed_post_count"],
             "llm_rounds": metadata["llm_rounds"],
+            "warmup_random_rounds": metadata["warmup_random_rounds"],
             "database_path": metadata["database_path"],
             # skip_embeddingsがTrueならembedding_modelはNoneまたは空文字列
             "embedding_model": metadata["embedding_model"],
@@ -379,6 +549,9 @@ def main() -> None:
             "config_snapshot": ";".join(config_snapshot),
             "step_metrics_file": metadata.get("step_metrics_file"),
             "step_snapshot_dir": metadata.get("step_snapshot_dir"),
+            "resume_run_dir": metadata.get("resume_run_dir"),
+            "resumed_from_round": metadata.get("resumed_from_round"),
+            "resumed_from_snapshot": metadata.get("resumed_from_snapshot"),
         }
         update_index(index_entry)
 

@@ -390,10 +390,34 @@ erDiagram
    
 2. **協調フィルタリング (collaborative)**: 
    - 類似した嗜好を持つユーザーの行動履歴に基づく推薦。
-   - ユーザーの埋め込みベクトルや意見ベクトルの類似度で近いユーザーを特定し、そのユーザーがいいねした投稿を推薦。
-   - エコーチェンバーを促進する可能性がある。
+   - ユーザーの埋め込みベクトルや意見ベクトルの類似度で近いユーザーを特定し、そのユーザーがいいね/リポストした投稿を推薦。
+   - エコーチェンバーを促進する可能性があるため、同期バズ（全員が同じ投稿に収束）を崩す仕掛けを入れている。
    - 実装: `CollaborativeFilteringRecommender`
-   
+   - 計算の流れ（実装準拠）:
+     1) 近傍ユーザー探索:
+        - 類似度はコサイン類似度。
+        - `similarity_threshold` 以上を候補とし、上位 `k_neighbors` を採用。
+     2) 投稿スコア集計:
+        - 近傍ユーザーが反応した投稿に対してスコアを足し上げる。
+        - 1投稿あたりの加点は次で重み付け:
+          - 類似度: `sim(u, v)`
+          - 新しさ（減衰）: `freshness(p)`（最新反応時刻に対する指数減衰）
+          - 人気ペナルティ: `1 / (1 + log(1 + freq(p)))`
+        - まとめると概ね:
+          - `score(u, p) += sim(u, v) * freshness(p) * pop_penalty(p)`
+     3) 同期バズ対策（collapse countermeasures）:
+        - 温度付きサンプリング:
+          - スコア上位をそのまま採用せず、`softmax(score / temperature)` に基づいてサンプリング（確率化）。
+        - 多様性再ランキング（MMR）:
+          - 候補集合に対し、`lambda * relevance - (1 - lambda) * max_similarity` を最大化する順に並べ替え。
+          - 投稿埋め込みがある場合に効き、近い内容の重複提示を抑える。
+        - 探索混入（explore_ratio）:
+          - 最終リストの一部を未提示候補からランダムに差し込む。
+     4) プラットフォーム側の露出cap（全体制御）:
+        - `rec` テーブル再構築時に「同一投稿の露出上限」を適用。
+        - 上限を超えた投稿はスキップし、不足分は別候補で補充。
+        - 実装: `src/simulation/simulation.py` の `_rebuild_rec_table`
+
 3. **分断修復型 (bridging)**: 
    - 異なる意見クラスター間をつなぐ（両者から支持される）コンテンツを優先的に提示。
    - 異なる意見を持つユーザーから支持を得ている投稿を高スコア化。
@@ -412,6 +436,13 @@ erDiagram
 ### 3. 構造的分断 (Segregation)
 - **Modularity**: エージェント間の「いいね」やフォロー関係からグラフを構築し、コミュニティの分断度合いを測る。
 - **Echo Chamber Score**: 自分と似た意見のコンテンツに接触した割合 vs 異なる意見に接触した割合。
+
+## 実験ログと再現性メモ（warmup の記録）
+- `--warmup-random-rounds N` を指定すると、最初の N ラウンドは random 推薦で探索を入れ、その後は指定アルゴリズムに切り替える。
+- この値は以下に保存される:
+  - `results/<run>/config/run_args.yaml`
+  - `results/index.csv` の `warmup_random_rounds` 列
+  - `results/<run>/step_metrics.csv` の `warmup_random_rounds` / `warmup_phase` / `active_recommender` 列
 
 ## フォルダ構成
 ```text

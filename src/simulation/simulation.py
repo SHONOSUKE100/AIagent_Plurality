@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import random
+import re
 import sqlite3
 import shutil
 from pathlib import Path
@@ -46,6 +47,68 @@ _REBUILD_MAX_CANDIDATE_POSTS = 10000
 _REBUILD_MAX_INTERACTIONS = 200000
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Best-effort detection for wrapped rate limit exceptions."""
+
+    cur: Exception | None = exc
+    for _ in range(5):
+        if cur is None:
+            break
+        msg = str(cur).lower()
+        if "rate limit" in msg or "rate_limit_exceeded" in msg or "error code: 429" in msg:
+            return True
+        cur = cur.__cause__ if isinstance(cur.__cause__, Exception) else None
+    return False
+
+
+async def _step_with_rate_limit_retry(
+    env,
+    actions: dict,
+    *,
+    context: str,
+    initial_delay_sec: int,
+    retry_delay_sec: int,
+    max_retries: int,
+) -> None:
+    """Run env.step with long backoff to survive API rate limits."""
+
+    def _clear_agent_memories_from_actions() -> None:
+        # When a rate-limit (or any wrapped exception) interrupts a step,
+        # some agents may already have recorded tool_calls in memory without
+        # the corresponding tool responses. Clear before retrying.
+        for agent in actions.keys():
+            try:
+                clear_memory = getattr(agent, "clear_memory", None)
+                if callable(clear_memory):
+                    clear_memory()
+                    continue
+                mem = getattr(agent, "memory", None)
+                clear_fn = getattr(mem, "clear", None) if mem is not None else None
+                if callable(clear_fn):
+                    clear_fn()
+            except Exception:
+                continue
+
+    attempt = 0
+    delay = max(1, int(initial_delay_sec))
+    while True:
+        try:
+            await env.step(actions)
+            return
+        except Exception as exc:  # noqa: BLE001 - rate limits may be wrapped
+            if not _is_rate_limit_error(exc) or attempt >= max_retries:
+                raise
+            attempt += 1
+            _clear_agent_memories_from_actions()
+            mins = max(1, int(round(delay / 60)))
+            print(
+                f"[rate-limit] {context}: hit rate limit, sleeping {mins} min "
+                f"(attempt {attempt}/{max_retries})"
+            )
+            await asyncio.sleep(delay)
+            delay = max(1, int(retry_delay_sec))
+
+
 def _enable_fail_fast_actions() -> None:
     """Patch SocialAgent to raise when LLM action returns an exception.
 
@@ -75,7 +138,8 @@ def _patch_social_environment_posts(
     """Monkey-patch SocialEnvironment.get_posts_env to avoid calling action.refresh().
 
     refresh() triggers a heavy platform-side cache rebuild. Instead, read recent
-    posts directly from SQLite and cache the formatted env keyed by MAX(post_id).
+    posts directly from SQLite. Prefer per-user recommendations from the ``rec``
+    table so agents do not all see the same global timeline.
     """
     global _SAFE_POSTS_PATCHED
     if _SAFE_POSTS_PATCHED:
@@ -88,20 +152,16 @@ def _patch_social_environment_posts(
             row = conn.execute("SELECT MAX(post_id) FROM post").fetchone()
             return int(row[0]) if row and row[0] is not None else 0
 
-    def _fetch_recent_posts() -> list[dict]:
+    def _rec_cache_key(user_id: int) -> int:
         with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT post_id, user_id, content, created_at, num_likes, num_dislikes
-                FROM post
-                ORDER BY post_id DESC
-                LIMIT ?
-                """,
-                (max_posts,),
-            ).fetchall()
+            row = conn.execute(
+                "SELECT MAX(rowid) FROM rec WHERE user_id = ?",
+                (int(user_id),),
+            ).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
 
-        posts = []
+    def _format_rows(rows: list[sqlite3.Row]) -> list[dict]:
+        posts: list[dict] = []
         for row in rows:
             content = row["content"] or ""
             if max_content_chars and len(content) > max_content_chars:
@@ -116,25 +176,64 @@ def _patch_social_environment_posts(
                     "num_dislikes": int(row["num_dislikes"] or 0),
                 }
             )
-
         posts.reverse()
         return posts
+
+    def _fetch_recommended_posts(user_id: int, limit: int) -> list[dict]:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT p.post_id, p.user_id, p.content, p.created_at, p.num_likes, p.num_dislikes
+                FROM rec r
+                JOIN post p ON p.post_id = r.post_id
+                WHERE r.user_id = ?
+                ORDER BY p.post_id DESC
+                LIMIT ?
+                """,
+                (int(user_id), int(limit)),
+            ).fetchall()
+        return _format_rows(rows)
+
+    def _fetch_recent_posts() -> list[dict]:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT post_id, user_id, content, created_at, num_likes, num_dislikes
+                FROM post
+                ORDER BY post_id DESC
+                LIMIT ?
+                """,
+                (int(max_posts),),
+            ).fetchall()
+
+        return _format_rows(rows)
 
     async def safe_get_posts_env(self) -> str:
         try:
             latest = _max_post_id()
+            agent_id = int(getattr(self.action, "agent_id", -1))
+            rec_key = _rec_cache_key(agent_id) if agent_id >= 0 else 0
             cache_key = getattr(self, "_posts_env_cache_key", None)
-            if cache_key == latest and hasattr(self, "_posts_env_cache_value"):
+            full_key = (agent_id, latest, rec_key)
+            if cache_key == full_key and hasattr(self, "_posts_env_cache_value"):
                 return getattr(self, "_posts_env_cache_value")
 
-            posts = _fetch_recent_posts()
+            posts = (
+                _fetch_recommended_posts(agent_id, max_posts)
+                if agent_id >= 0
+                else []
+            )
+            if not posts:
+                posts = _fetch_recent_posts()
             if not posts:
                 env_text = "There are no existing posts."
             else:
                 posts_env = json.dumps(posts, ensure_ascii=False, indent=2)
                 env_text = self.posts_env_template.substitute(posts=posts_env)
 
-            setattr(self, "_posts_env_cache_key", latest)
+            setattr(self, "_posts_env_cache_key", full_key)
             setattr(self, "_posts_env_cache_value", env_text)
             return env_text
         except Exception:
@@ -145,6 +244,18 @@ def _patch_social_environment_posts(
 
     SocialEnvironment.get_posts_env = safe_get_posts_env  # type: ignore[assignment]
     _SAFE_POSTS_PATCHED = True
+
+
+def _enable_sqlite_wal(db_path: Path) -> None:
+    """Best-effort WAL + busy timeout to reduce SQLite lock errors."""
+
+    try:
+        with sqlite3.connect(db_path, timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA busy_timeout=30000;")
+    except Exception:
+        pass
 
 
 def _install_recommender(platform, recommender) -> bool:
@@ -222,6 +333,8 @@ def _rebuild_rec_table(
     max_users: int | None = None,
     max_candidate_posts: int = 10000,
     max_recent_interactions: int = 200000,
+    exposure_cap_per_post: int | None = None,
+    exposure_cap_ratio: float = 0.2,
 ) -> None:
     """Recompute and persist rec table using the injected recommender (capped)."""
 
@@ -351,13 +464,46 @@ def _rebuild_rec_table(
 
         rows = []
         limit = max_recommendations or getattr(recommender, "max_recommendations", 10)
+        num_users = len(users)
+        cap = exposure_cap_per_post
+        if cap is None:
+            cap = max(limit, int(num_users * max(0.0, exposure_cap_ratio)))
+        cap = max(limit, int(cap))
+        exposure_counts: dict[int, int] = {}
         for user in users:
             try:
                 recs = recommender.recommend(user, posts, interactions, users)
             except Exception:
                 recs = []
-            for pid in recs[:limit]:
-                rows.append((user.user_id, int(pid)))
+            if not recs:
+                continue
+
+            picked: list[int] = []
+            for pid_str in recs:
+                if len(picked) >= limit:
+                    break
+                pid = int(pid_str)
+                if exposure_counts.get(pid, 0) >= cap:
+                    continue
+                picked.append(pid)
+                exposure_counts[pid] = exposure_counts.get(pid, 0) + 1
+
+            # Backfill if cap filtered too aggressively.
+            if len(picked) < limit:
+                remaining = [
+                    int(p.post_id)
+                    for p in posts
+                    if int(p.post_id) not in set(picked) and exposure_counts.get(int(p.post_id), 0) < cap
+                ]
+                random.shuffle(remaining)
+                for pid in remaining:
+                    if len(picked) >= limit:
+                        break
+                    picked.append(pid)
+                    exposure_counts[pid] = exposure_counts.get(pid, 0) + 1
+
+            for pid in picked[:limit]:
+                rows.append((user.user_id, pid))
 
         with conn:
             conn.execute("DELETE FROM rec")
@@ -398,6 +544,12 @@ def _capture_step_metrics(
     metrics_path: Path | str | None,
     label: str,
     round_num: int | None = None,
+    *,
+    recommendation_type: RecommendationType | str | None = None,
+    agent_action_ratio: float | None = None,
+    warmup_random_rounds: int | None = None,
+    active_recommender: str | None = None,
+    warmup_phase: bool | None = None,
 ) -> None:
     """Compute graph metrics and append to CSV for the current step."""
 
@@ -427,6 +579,11 @@ def _capture_step_metrics(
     fieldnames = [
         "label",
         "round",
+        "recommendation_type",
+        "active_recommender",
+        "warmup_random_rounds",
+        "warmup_phase",
+        "agent_action_ratio",
         "users",
         "posts",
         "comments",
@@ -444,6 +601,11 @@ def _capture_step_metrics(
     row = {
         "label": label,
         "round": round_num if round_num is not None else "",
+        "recommendation_type": str(recommendation_type) if recommendation_type is not None else "",
+        "active_recommender": active_recommender or "",
+        "warmup_random_rounds": warmup_random_rounds if warmup_random_rounds is not None else "",
+        "warmup_phase": int(bool(warmup_phase)) if warmup_phase is not None else "",
+        "agent_action_ratio": agent_action_ratio if agent_action_ratio is not None else "",
         "users": user_count,
         "posts": post_count,
         "comments": comment_count,
@@ -480,6 +642,97 @@ def _snapshot_database(
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     destination = snapshot_dir / f"{label}.db"
     shutil.copy2(db_path, destination)
+
+
+def _infer_round_from_snapshot_path(snapshot_path: Path) -> int | None:
+    """Infer the completed round number from a snapshot filename."""
+
+    name = snapshot_path.name
+    if name == "after_seeding.db":
+        return 0
+    match = re.fullmatch(r"round_(\d+)\.db", name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _truncate_step_metrics(metrics_path: Path | str | None, max_round: int) -> None:
+    """Remove metrics rows beyond ``max_round`` to avoid duplicates on resume."""
+
+    if metrics_path is None:
+        return
+
+    path = Path(metrics_path)
+    if not path.exists():
+        return
+
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+
+    if not fieldnames:
+        return
+
+    def _round_ok(value: str | None) -> bool:
+        if value is None or value == "":
+            # Keep non-round markers like after_seeding.
+            return True
+        try:
+            return int(float(value)) <= max_round
+        except ValueError:
+            return True
+
+    kept_rows = [row for row in rows if _round_ok(row.get("round"))]
+
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(kept_rows)
+
+
+def _get_max_time_step(db_path: Path) -> int:
+    """Best-effort recovery of the platform time_step from existing tables."""
+
+    queries = [
+        "SELECT MAX(created_at) FROM user",
+        "SELECT MAX(created_at) FROM post",
+        "SELECT MAX(created_at) FROM comment",
+        "SELECT MAX(created_at) FROM 'like'",
+        "SELECT MAX(created_at) FROM follow",
+    ]
+
+    max_value = 0
+    with sqlite3.connect(db_path) as conn:
+        for query in queries:
+            try:
+                row = conn.execute(query).fetchone()
+                if row and row[0] is not None:
+                    max_value = max(max_value, int(float(row[0])))
+            except sqlite3.Error:
+                continue
+            except (TypeError, ValueError):
+                continue
+    return max_value
+
+
+def _bind_agents_to_channel(agent_graph, channel) -> None:
+    """Ensure all agents use the environment's shared channel."""
+
+    try:
+        agent_items = list(agent_graph.get_agents())
+    except Exception:
+        return
+
+    for _, agent in agent_items:
+        try:
+            agent.channel = channel
+            env = getattr(agent, "env", None)
+            action = getattr(env, "action", None) if env is not None else None
+            if action is not None:
+                action.channel = channel
+        except Exception:
+            continue
 
 
 def load_seeding_data(seeding_path: Path | str) -> list[dict]:
@@ -521,7 +774,12 @@ async def run_simulation(
     step_snapshot_dir: Path | str | None = None,
     max_memory_messages: int = 5,
     warmup_random_rounds: int = 10,
-    ) -> None:
+    resume_from_snapshot: Path | str | None = None,
+    resume_last_completed_round: int | None = None,
+    rate_limit_initial_delay_sec: int = 600,
+    rate_limit_retry_delay_sec: int = 300,
+    max_rate_limit_retries: int = 50,
+) -> None:
     """Run the social simulation once using personas from ``persona_path``.
     
     Args:
@@ -544,6 +802,11 @@ async def run_simulation(
         warmup_random_rounds: Use random recommendations for the first N rounds
             before switching to the requested algorithm to inject exploration
             and reduce early collapse.
+        resume_from_snapshot: Optional snapshot DB path to resume from.
+        resume_last_completed_round: The last fully completed round in the snapshot.
+        rate_limit_initial_delay_sec: Initial sleep when rate limited (default 10 minutes).
+        rate_limit_retry_delay_sec: Subsequent sleep between retries (default 5 minutes).
+        max_rate_limit_retries: Maximum retries before failing the run.
 
     Notes:
         - Embeddings are generated incrementally (bios after reset, seeded posts
@@ -563,23 +826,60 @@ async def run_simulation(
 
     # Load seeding data
     seeding_data = load_seeding_data(seeding_path)
-    
+
     # Create the recommender for custom content moderation
     recommender_main = create_recommender(recommendation_type)
     warmup_recommender = None
     if warmup_random_rounds > 0 and recommendation_type != RecommendationType.RANDOM:
         warmup_recommender = create_recommender(RecommendationType.RANDOM)
-    active_recommender = warmup_recommender or recommender_main
+    resume_mode = resume_from_snapshot is not None
+    resume_snapshot_path = Path(resume_from_snapshot) if resume_from_snapshot else None
+
+    inferred_resume_round = (
+        _infer_round_from_snapshot_path(resume_snapshot_path)
+        if resume_snapshot_path is not None
+        else None
+    )
+    resume_round = (
+        int(resume_last_completed_round)
+        if resume_last_completed_round is not None
+        else inferred_resume_round
+    )
+    if resume_mode:
+        if resume_snapshot_path is None or not resume_snapshot_path.exists():
+            raise FileNotFoundError(f"Resume snapshot not found: {resume_snapshot_path}")
+        if resume_round is None:
+            raise ValueError(
+                "Could not infer resume round; please provide resume_last_completed_round."
+            )
+        if resume_round < 0:
+            raise ValueError("resume_last_completed_round must be non-negative")
+        if resume_round > llm_rounds:
+            raise ValueError(
+                f"resume_last_completed_round ({resume_round}) exceeds llm_rounds ({llm_rounds})"
+            )
+
+    if warmup_recommender and resume_round is not None and resume_round >= warmup_random_rounds:
+        active_recommender = recommender_main
+    else:
+        active_recommender = warmup_recommender or recommender_main
 
     db_path = Path(database_path)
-    if db_path.exists():
-        db_path.unlink()
+    if resume_mode:
+        if db_path.exists():
+            db_path.unlink()
+        shutil.copy2(resume_snapshot_path, db_path)
+        _truncate_step_metrics(step_metrics_path, max_round=resume_round)
+    else:
+        if db_path.exists():
+            db_path.unlink()
 
     env = oasis.make(
         agent_graph=agent_graph,
         platform=platform,
         database_path=str(db_path),
     )
+    _enable_sqlite_wal(db_path)
 
     # Patch OASIS SocialEnvironment to avoid heavy refreshes for posts_env.
     _patch_social_environment_posts(db_path, max_posts=200, max_content_chars=280)
@@ -594,44 +894,85 @@ async def run_simulation(
     )
 
     try:
-        await env.reset()
-        if incremental_embeddings:
-            await _embed_all_bios(
+        if resume_mode:
+            env.platform_task = asyncio.create_task(env.platform.running())
+            _bind_agents_to_channel(env.agent_graph, env.channel)
+            # Ensure no dangling tool_calls remain in memory from a prior
+            # interrupted step before we resume.
+            try:
+                for _, agent in env.agent_graph.get_agents():
+                    clear_memory = getattr(agent, "clear_memory", None)
+                    if callable(clear_memory):
+                        clear_memory()
+                        continue
+                    mem = getattr(agent, "memory", None)
+                    clear_fn = getattr(mem, "clear", None) if mem is not None else None
+                    if callable(clear_fn):
+                        clear_fn()
+            except Exception:
+                pass
+            try:
+                env.platform.sandbox_clock.time_step = _get_max_time_step(db_path)
+            except Exception:
+                pass
+            _rebuild_rec_table(
+                db_path,
+                active_recommender,
+                max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
+                max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
+            )
+        else:
+            await env.reset()
+            if incremental_embeddings:
+                await _embed_all_bios(
+                    db_path=db_path,
+                    model=embedding_model,
+                    batch_size=embedding_batch_size,
+                )
+
+            last_post_id = _get_max_id(db_path, "post", "post_id")
+            await _seed_posts(
+                env,
+                seeding_data,
+                seed_post_count,
+                rate_limit_initial_delay_sec=rate_limit_initial_delay_sec,
+                rate_limit_retry_delay_sec=rate_limit_retry_delay_sec,
+                max_rate_limit_retries=max_rate_limit_retries,
+            )
+            if incremental_embeddings:
+                new_posts = _get_new_ids_since(db_path, "post", "post_id", last_post_id)
+                await embed_selected_items(
+                    database_path=db_path,
+                    post_ids=new_posts,
+                    model=embedding_model,
+                    batch_size=embedding_batch_size,
+                )
+
+            _capture_step_metrics(
                 db_path=db_path,
-                model=embedding_model,
-                batch_size=embedding_batch_size,
+                metrics_path=step_metrics_path,
+                label="after_seeding",
+                round_num=0,
+                recommendation_type=recommendation_type,
+                agent_action_ratio=agent_action_ratio,
+                warmup_random_rounds=warmup_random_rounds,
+                active_recommender=active_recommender.__class__.__name__,
+                warmup_phase=bool(warmup_recommender and warmup_random_rounds > 0),
+            )
+            _rebuild_rec_table(
+                db_path,
+                active_recommender,
+                max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
+                max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
+            )
+            _snapshot_database(
+                db_path=db_path,
+                snapshot_dir=step_snapshot_dir,
+                label="after_seeding",
             )
 
-        last_post_id = _get_max_id(db_path, "post", "post_id")
-        await _seed_posts(env, seeding_data, seed_post_count)
-        if incremental_embeddings:
-            new_posts = _get_new_ids_since(db_path, "post", "post_id", last_post_id)
-            await embed_selected_items(
-                database_path=db_path,
-                post_ids=new_posts,
-                model=embedding_model,
-                batch_size=embedding_batch_size,
-            )
-
-        _capture_step_metrics(
-            db_path=db_path,
-            metrics_path=step_metrics_path,
-            label="after_seeding",
-            round_num=0,
-        )
-        _rebuild_rec_table(
-            db_path,
-            active_recommender,
-            max_candidate_posts=_REBUILD_MAX_CANDIDATE_POSTS,
-            max_recent_interactions=_REBUILD_MAX_INTERACTIONS,
-        )
-        _snapshot_database(
-            db_path=db_path,
-            snapshot_dir=step_snapshot_dir,
-            label="after_seeding",
-        )
-
-        for round_num in range(llm_rounds):
+        start_round = resume_round if resume_round is not None else 0
+        for round_num in range(start_round, llm_rounds):
             # Switch from warmup random to target recommender after warmup_random_rounds
             if warmup_recommender and round_num >= warmup_random_rounds:
                 if active_recommender is not recommender_main:
@@ -653,6 +994,9 @@ async def run_simulation(
                 embedding_model=embedding_model,
                 embedding_batch_size=embedding_batch_size,
                 max_memory_messages=max_memory_messages,
+                rate_limit_initial_delay_sec=rate_limit_initial_delay_sec,
+                rate_limit_retry_delay_sec=rate_limit_retry_delay_sec,
+                max_rate_limit_retries=max_rate_limit_retries,
             )
             if (round_num + 1) % _REBUILD_REC_EVERY == 0 or (round_num + 1 == llm_rounds):
                 _rebuild_rec_table(
@@ -666,6 +1010,11 @@ async def run_simulation(
                 metrics_path=step_metrics_path,
                 label=f"round_{round_num + 1}",
                 round_num=round_num + 1,
+                recommendation_type=recommendation_type,
+                agent_action_ratio=agent_action_ratio,
+                warmup_random_rounds=warmup_random_rounds,
+                active_recommender=active_recommender.__class__.__name__,
+                warmup_phase=bool(warmup_recommender and round_num < warmup_random_rounds),
             )
             _snapshot_database(
                 db_path=db_path,
@@ -687,6 +1036,11 @@ async def run_simulation(
         metrics_path=step_metrics_path,
         label="final",
         round_num=llm_rounds,
+        recommendation_type=recommendation_type,
+        agent_action_ratio=agent_action_ratio,
+        warmup_random_rounds=warmup_random_rounds,
+        active_recommender=active_recommender.__class__.__name__,
+        warmup_phase=False,
     )
     _snapshot_database(
         db_path=db_path,
@@ -695,7 +1049,15 @@ async def run_simulation(
     )
 
 
-async def _seed_posts(env, seeding_data: list[dict], seed_post_count: int) -> None:
+async def _seed_posts(
+    env,
+    seeding_data: list[dict],
+    seed_post_count: int,
+    *,
+    rate_limit_initial_delay_sec: int,
+    rate_limit_retry_delay_sec: int,
+    max_rate_limit_retries: int,
+) -> None:
     """Create initial posts using seeding data.
     
     Each seeding post is assigned to a random agent who will create that post.
@@ -729,7 +1091,14 @@ async def _seed_posts(env, seeding_data: list[dict], seed_post_count: int) -> No
             seeded_agents.append(agent)
 
     if actions:
-        await env.step(actions)
+        await _step_with_rate_limit_retry(
+            env,
+            actions,
+            context="seeding",
+            initial_delay_sec=rate_limit_initial_delay_sec,
+            retry_delay_sec=rate_limit_retry_delay_sec,
+            max_retries=max_rate_limit_retries,
+        )
         
         # Clear memory for seeded agents to prevent tool_calls state corruption
         # This fixes the OpenAI error: "An assistant message with 'tool_calls' 
@@ -752,6 +1121,9 @@ async def _llm_round(
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     embedding_batch_size: int = 32,
     max_memory_messages: int = 5,
+    rate_limit_initial_delay_sec: int = 600,
+    rate_limit_retry_delay_sec: int = 300,
+    max_rate_limit_retries: int = 50,
 ) -> None:
     """Execute one LLM round with a random subset of agents.
     
@@ -785,7 +1157,13 @@ async def _llm_round(
     if clear_memory_before_action:
         for _, agent in selected_agents:
             try:
-                _prune_agent_memory(agent, keep_last=max_memory_messages)
+                mem = getattr(agent, "memory", None)
+                clear_fn = getattr(mem, "clear", None) if mem is not None else None
+                if callable(clear_fn):
+                    # Full clear is safer than pruning when tool_calls are present.
+                    clear_fn()
+                else:
+                    _prune_agent_memory(agent, keep_last=max_memory_messages)
             except Exception:
                 pass  # Ignore if memory clearing fails
     
@@ -798,7 +1176,14 @@ async def _llm_round(
     }
 
     if actions:
-        await env.step(actions)
+        await _step_with_rate_limit_retry(
+            env,
+            actions,
+            context=f"round {round_num + 1}",
+            initial_delay_sec=rate_limit_initial_delay_sec,
+            retry_delay_sec=rate_limit_retry_delay_sec,
+            max_retries=max_rate_limit_retries,
+        )
         if incremental_embeddings and db_path:
             new_post_ids = _get_new_ids_since(db_path, "post", "post_id", prev_post_id)
             new_comment_ids = _get_new_ids_since(
@@ -864,6 +1249,12 @@ def run(
     step_metrics_path: Path | str | None = None,
     step_snapshot_dir: Path | str | None = None,
     max_memory_messages: int = 5,
+    warmup_random_rounds: int = 0,
+    resume_from_snapshot: Path | str | None = None,
+    resume_last_completed_round: int | None = None,
+    rate_limit_initial_delay_sec: int = 600,
+    rate_limit_retry_delay_sec: int = 300,
+    max_rate_limit_retries: int = 50,
 ) -> None:
     """Convenience wrapper that mirrors the notebook execution.
     
@@ -882,6 +1273,10 @@ def run(
         step_metrics_path: Optional CSV path to record per-step graph metrics.
         step_snapshot_dir: Optional directory to save SQLite snapshots after each step.
         max_memory_messages: Number of past messages to retain in agent memory (smaller saves RAM).
+        warmup_random_rounds: Number of initial rounds to use random recommendations before switching to the chosen recommender.
+        rate_limit_initial_delay_sec: Initial sleep when rate limited (default 10 minutes).
+        rate_limit_retry_delay_sec: Subsequent sleep between retries (default 5 minutes).
+        max_rate_limit_retries: Maximum retries before failing the run.
     """
 
     asyncio.run(
@@ -902,5 +1297,11 @@ def run(
             step_metrics_path=step_metrics_path,
             step_snapshot_dir=step_snapshot_dir,
             max_memory_messages=max_memory_messages,
+            warmup_random_rounds=warmup_random_rounds,
+            resume_from_snapshot=resume_from_snapshot,
+            resume_last_completed_round=resume_last_completed_round,
+            rate_limit_initial_delay_sec=rate_limit_initial_delay_sec,
+            rate_limit_retry_delay_sec=rate_limit_retry_delay_sec,
+            max_rate_limit_retries=max_rate_limit_retries,
         )
     )

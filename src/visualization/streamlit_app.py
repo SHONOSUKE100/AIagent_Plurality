@@ -396,7 +396,7 @@ def plot_network(
         kind = data.get("kind")
         node_colors.append((color_map or {}).get(kind, default_color))
 
-    node_sizes = [180 + 20 * graph.degree[n] for n in graph.nodes()]
+    node_sizes = [60 + 8 * graph.degree[n] for n in graph.nodes()]
     # Draw nodes only (no labels to avoid clutter)
     nx.draw_networkx_nodes(
         graph,
@@ -421,6 +421,14 @@ def plot_network(
 
     fig.tight_layout()
     return fig
+
+
+def _filter_graph_by_degree(graph: nx.Graph, min_degree: int) -> nx.Graph:
+    threshold = max(1, int(min_degree))
+    nodes_to_keep = [n for n, d in graph.degree() if int(d) >= threshold]
+    if not nodes_to_keep:
+        return graph.__class__()
+    return graph.subgraph(nodes_to_keep).copy()
 
 
 def compute_graph_metrics(conn: sqlite3.Connection) -> dict:
@@ -526,7 +534,7 @@ def _cache_echo_gae(
     )
 
 
-def render_echo_gae_dashboard(db_path: str) -> None:
+def render_echo_gae_dashboard(db_path: str, *, min_degree: int) -> None:
     st.subheader("EchoGAE + ECS（論文準拠）")
     cols = st.columns(4)
     with cols[0]:
@@ -566,7 +574,7 @@ def render_echo_gae_dashboard(db_path: str) -> None:
         st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        fa_fig = plot_forceatlas2(result.graph, result.communities, iterations=800)
+        fa_fig = plot_forceatlas2(result.graph, result.communities, iterations=800, min_degree=min_degree, node_size=26)
         st.pyplot(fa_fig, use_container_width=True)
 
     with tab3:
@@ -577,7 +585,7 @@ def render_echo_gae_dashboard(db_path: str) -> None:
         st.pyplot(scatter_fig, use_container_width=True)
 
 
-def render_ecs_embedding_graph(conn: sqlite3.Connection) -> None:
+def render_ecs_embedding_graph(conn: sqlite3.Connection, *, min_degree: int) -> None:
     """埋め込みとコミュニティに基づくユーザーグラフを可視化（ECS計算と同じ前処理）。"""
     ecs_per_comm, ecs_global, communities, valid_sizes = compute_ecs_from_db(conn)
     if not communities or not ecs_per_comm:
@@ -623,21 +631,28 @@ def render_ecs_embedding_graph(conn: sqlite3.Connection) -> None:
         pos = nx.spring_layout(g, seed=42)
 
     cmap = plt.get_cmap("tab20")
-    colors = []
-    for u in embedded_users:
+    def _color_for_user(u: int):
         comm_idx = user_to_comm.get(u, 0)
-        colors.append(cmap(comm_idx % cmap.N))
+        return cmap(comm_idx % cmap.N)
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    # Draw edges lightly
-    for u, v, w in edges_embedded:
+    # Draw edges lightly (filtered graph only)
+    for u, v, w in g_vis.edges(data="weight", default=1.0):
         x1, y1 = pos[int(u)]
         x2, y2 = pos[int(v)]
         ax.plot([x1, x2], [y1, y2], color="#cbd5e1", alpha=0.3, linewidth=0.8)
 
-    xs = [pos[u][0] for u in embedded_users]
-    ys = [pos[u][1] for u in embedded_users]
-    ax.scatter(xs, ys, c=colors, s=40, edgecolors="#111827", linewidths=0.4)
+    # Apply degree filter for visualization clarity
+    g_vis = nx.Graph()
+    g_vis.add_nodes_from(embedded_users)
+    g_vis.add_weighted_edges_from(edges_embedded)
+    g_vis = _filter_graph_by_degree(g_vis, min_degree)
+    if not g_vis.nodes:
+        return
+    xs = [pos[u][0] for u in g_vis.nodes]
+    ys = [pos[u][1] for u in g_vis.nodes]
+    node_colors = [_color_for_user(int(u)) for u in g_vis.nodes]
+    ax.scatter(xs, ys, c=node_colors, s=28, edgecolors="#111827", linewidths=0.4)
 
     ax.set_title("ユーザー埋め込み空間におけるコミュニティ（ECS算出と同前処理）")
     ax.set_xticks([])
@@ -663,9 +678,10 @@ def render_posts(conn: sqlite3.Connection) -> None:
     st.dataframe(comments, hide_index=True)
 
 
-def render_follow_graph(conn: sqlite3.Connection) -> None:
+def render_follow_graph(conn: sqlite3.Connection, *, min_degree: int) -> None:
     st.subheader("フォロー関係グラフ (上位ユーザー中心)")
     graph = build_follow_graph(conn)
+    graph = _filter_graph_by_degree(graph, min_degree)
     fig = plot_network(graph, "Follow network", color_map={None: "#22c55e", "user": "#22c55e"})
     if fig:
         st.pyplot(fig, use_container_width=True)
@@ -673,13 +689,14 @@ def render_follow_graph(conn: sqlite3.Connection) -> None:
         st.info("フォロー関係が見つかりませんでした。")
 
 
-def render_like_graph(conn: sqlite3.Connection, show_all: bool = False) -> None:
+def render_like_graph(conn: sqlite3.Connection, show_all: bool = False, *, min_degree: int) -> None:
     st.subheader("ユーザーとコンテンツのいいね関係")
     graph = build_like_graph(
         conn,
         post_limit=None if show_all else 25,
         edge_limit=None if show_all else 400,
     )
+    graph = _filter_graph_by_degree(graph, min_degree)
     fig = plot_network(graph, "User-Post likes", color_map={"user": "#38bdf8", "post": "#f97316"})
     if fig:
         st.pyplot(fig, use_container_width=True)
@@ -687,7 +704,7 @@ def render_like_graph(conn: sqlite3.Connection, show_all: bool = False) -> None:
         st.info("いいね情報が見つかりませんでした。")
 
 
-def render_engagement_graph(conn: sqlite3.Connection, show_all: bool = False) -> None:
+def render_engagement_graph(conn: sqlite3.Connection, show_all: bool = False, *, min_degree: int) -> None:
     st.subheader("ユーザー間インタラクション（ポスト/コメント経由を集約）")
     graph = build_engagement_graph(
         conn,
@@ -695,18 +712,15 @@ def render_engagement_graph(conn: sqlite3.Connection, show_all: bool = False) ->
         like_limit=None if show_all else 400,
         comment_limit=None if show_all else 150,
     )
-    fig = plot_network(
-        graph,
-        "Engagement network",
-        color_map={"user": "#38bdf8"},
-    )
+    graph = _filter_graph_by_degree(graph, min_degree)
+    fig = plot_network(graph, "Engagement network", color_map={"user": "#38bdf8"})
     if fig:
         st.pyplot(fig, use_container_width=True)
     else:
         st.info("十分なデータがありません。")
 
 
-def render_echo_chamber_graph(conn: sqlite3.Connection) -> None:
+def render_echo_chamber_graph(conn: sqlite3.Connection, *, min_degree: int) -> None:
     st.subheader("エコーチェンバー可視化（いいねネットワークのクラスター）")
     nodes, edges = load_like_graph_from_connection(conn)
     if not nodes or not edges:
@@ -716,6 +730,10 @@ def render_echo_chamber_graph(conn: sqlite3.Connection) -> None:
     g = nx.Graph()
     g.add_nodes_from(nodes)
     g.add_weighted_edges_from(edges)
+    g = _filter_graph_by_degree(g, min_degree)
+    if not g.nodes:
+        st.info("閾値により表示できるノードがありません。")
+        return
 
     communities = list(greedy_modularity_communities(g))
     if not communities:
@@ -781,10 +799,26 @@ def _load_step_metrics(run_dir: Path) -> pd.DataFrame:
     if not metrics_path.exists():
         return pd.DataFrame()
     df = pd.read_csv(metrics_path)
-    # Ensure ordering by round/label
-    if "round" in df.columns:
-        df = df.sort_values(by=["round", "label"], na_position="last")
+    # Ensure ordering by logical step order
+    if "label" in df.columns:
+        df = df.copy()
+        df["label"] = df["label"].astype(str)
+        df["step_order"] = df["label"].apply(_step_sort_key)
+        df = df.sort_values(by=["step_order", "label"], na_position="last").drop(columns=["step_order"])
     return df
+
+
+def _step_sort_key(label: str) -> int:
+    if label == "after_seeding":
+        return 0
+    if label.startswith("round_"):
+        try:
+            return int(label.split("_", 1)[1])
+        except Exception:
+            return 10**9
+    if label == "final":
+        return 10**9 - 1
+    return 10**9
 
 
 def render_step_metrics(metrics: pd.DataFrame) -> None:
@@ -793,10 +827,13 @@ def render_step_metrics(metrics: pd.DataFrame) -> None:
         st.info("step_metrics.csv が見つからないか、データがありません。")
         return
     df = metrics.copy()
+    df["label"] = df["label"].astype(str)
+    df["step_order"] = df["label"].apply(_step_sort_key)
+    df = df.sort_values(by=["step_order", "label"]).drop(columns=["step_order"])
     # Normalize types
     for col in df.columns:
         if col not in {"label"}:
-            df[col] = pd.to_numeric(df[col], errors="ignore")
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     st.dataframe(df, hide_index=True, use_container_width=True)
 
@@ -805,6 +842,7 @@ def render_step_metrics(metrics: pd.DataFrame) -> None:
     metric_cols = [c for c in ["modularity", "density", "average_clustering", "transitivity"] if c in df.columns]
 
     if count_cols:
+        df[count_cols] = df[count_cols].ffill()
         st.markdown("**累積カウントの推移**")
         st.line_chart(df.set_index("label")[count_cols], height=260)
         # 差分も表示（増減を把握する用）
@@ -814,6 +852,7 @@ def render_step_metrics(metrics: pd.DataFrame) -> None:
         st.dataframe(delta_df[["label"] + [f"Δ{c}" for c in count_cols]], hide_index=True)
 
     if metric_cols:
+        df[metric_cols] = df[metric_cols].ffill()
         st.markdown("**ネットワーク指標の推移**")
         st.line_chart(df.set_index("label")[metric_cols], height=260)
 
@@ -832,6 +871,7 @@ def main() -> None:
 
         snapshot_choice = None
         show_all_graphs = st.checkbox("スナップショット全体を可視化（制限なし）", value=False)
+        min_degree = st.slider("最小次数（つながり数）", min_value=1, max_value=20, value=1, step=1)
         if base_run_dir and base_run_dir.exists():
             snapshots = _list_snapshots(base_run_dir)
             if snapshots:
@@ -857,7 +897,7 @@ def main() -> None:
 
     render_metrics(conn)
     render_ecs(conn)
-    render_echo_gae_dashboard(str(db_path_resolved))
+    render_echo_gae_dashboard(str(db_path_resolved), min_degree=min_degree)
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -865,11 +905,11 @@ def main() -> None:
     with col2:
         render_top_users(conn)
 
-    render_follow_graph(conn)
-    render_like_graph(conn, show_all=show_all_graphs)
-    render_engagement_graph(conn, show_all=show_all_graphs)
-    render_echo_chamber_graph(conn)
-    render_ecs_embedding_graph(conn)
+    render_follow_graph(conn, min_degree=min_degree)
+    render_like_graph(conn, show_all=show_all_graphs, min_degree=min_degree)
+    render_engagement_graph(conn, show_all=show_all_graphs, min_degree=min_degree)
+    render_echo_chamber_graph(conn, min_degree=min_degree)
+    render_ecs_embedding_graph(conn, min_degree=min_degree)
 
 
 if __name__ == "__main__":

@@ -141,25 +141,36 @@ def compute_forceatlas2_layout(graph: nx.Graph, iterations: int = 1000) -> Dict[
     return {int(k): tuple(map(float, v)) for k, v in pos.items()}
 
 
-def plot_forceatlas2(graph: nx.Graph, communities: Sequence[set[int]], *, iterations: int = 1000) -> plt.Figure:
-    pos = compute_forceatlas2_layout(graph, iterations=iterations)
+def plot_forceatlas2(
+    graph: nx.Graph,
+    communities: Sequence[set[int]],
+    *,
+    iterations: int = 1000,
+    min_degree: int = 1,
+    node_size: float = 28,
+) -> plt.Figure:
+    # Drop isolates or low-degree nodes to avoid extreme layout compression.
+    threshold = max(1, int(min_degree))
+    core_nodes = [n for n, d in graph.degree() if int(d) >= threshold]
+    graph_core = graph.subgraph(core_nodes).copy() if core_nodes else graph
+    pos = compute_forceatlas2_layout(graph_core, iterations=iterations)
     color_lookup = _community_colors(communities)
     fig, ax = plt.subplots(figsize=(7, 5))
 
     # edges first
-    for u, v in graph.edges():
+    for u, v in graph_core.edges():
         x1, y1 = pos[int(u)]
         x2, y2 = pos[int(v)]
         ax.plot([x1, x2], [y1, y2], color="#cbd5e1", alpha=0.25, linewidth=0.6)
 
     xs, ys, colors = [], [], []
-    for node in graph.nodes():
+    for node in graph_core.nodes():
         xs.append(pos[int(node)][0])
         ys.append(pos[int(node)][1])
         colors.append(color_lookup.get(int(node), "#6b7280"))
 
-    ax.scatter(xs, ys, c=colors, s=50, edgecolors="#0f172a", linewidths=0.5)
-    ax.set_title("ForceAtlas2 layout (like graph)")
+    ax.scatter(xs, ys, c=colors, s=node_size, edgecolors="#0f172a", linewidths=0.5)
+    ax.set_title(f"ForceAtlas2 layout (degree≥{threshold})")
     ax.axis("off")
     return fig
 

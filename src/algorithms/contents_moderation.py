@@ -188,14 +188,21 @@ class CollaborativeFilteringRecommender(BaseRecommender):
         k_neighbors: int = 5,
         explore_ratio: float = 0.3,
         recency_half_life: float = 1000.0,
+        sampling_temperature: float = 0.7,
+        mmr_lambda: float = 0.75,
+        mmr_candidates: int = 50,
     ):
         super().__init__(max_recommendations)
         self.similarity_threshold = similarity_threshold
         self.k_neighbors = k_neighbors
         self.explore_ratio = explore_ratio
         self.recency_half_life = recency_half_life
+        self.sampling_temperature = sampling_temperature
+        self.mmr_lambda = mmr_lambda
+        self.mmr_candidates = mmr_candidates
         self._liked_by_user: Dict[int, List[str]] = {}
         self._post_latest_ts: Dict[str, float] = {}
+        self._now_ts: float = 0.0
         self._prepared_sig: Tuple[int, int] | None = None
 
     def _prepare(
@@ -214,12 +221,15 @@ class CollaborativeFilteringRecommender(BaseRecommender):
 
         liked_by_user: Dict[int, List[str]] = {}
         post_latest_ts: Dict[str, float] = {}
+        max_ts = 0.0
         for interaction in interactions:
             if interaction.action in ("like", "repost"):
                 liked_by_user.setdefault(interaction.user_id, []).append(interaction.post_id)
             try:
-                # Store latest timestamp as float (unix-like)
+                # Store latest timestamp as float (time_step-like in this sim)
                 ts_val = float(interaction.timestamp)
+                if ts_val > max_ts:
+                    max_ts = ts_val
                 prev = post_latest_ts.get(interaction.post_id, 0.0)
                 if ts_val > prev:
                     post_latest_ts[interaction.post_id] = ts_val
@@ -228,6 +238,7 @@ class CollaborativeFilteringRecommender(BaseRecommender):
 
         self._liked_by_user = liked_by_user
         self._post_latest_ts = post_latest_ts
+        self._now_ts = max_ts
         self._prepared_sig = sig
     
     def recommend(
@@ -274,7 +285,19 @@ class CollaborativeFilteringRecommender(BaseRecommender):
             if pid in available_post_ids
         ]
         scored_posts.sort(key=lambda x: x[1], reverse=True)
-        top_k = [pid for pid, _ in scored_posts[: self.max_recommendations]]
+        if not scored_posts:
+            sample_size = min(self.max_recommendations, len(available_posts))
+            selected = random.sample(available_posts, sample_size)
+            return [p.post_id for p in selected]
+
+        # Collapse countermeasure 1: soften deterministic top-k with temperature sampling.
+        sampled = self._temperature_sample(scored_posts, k=min(self.mmr_candidates, len(scored_posts)))
+        sampled_scores = [(pid, post_scores[pid]) for pid in sampled]
+
+        # Collapse countermeasure 2: re-rank for diversity (MMR) when embeddings exist.
+        post_embeddings = {p.post_id: p.embedding for p in posts if p.embedding is not None}
+        reranked = self._mmr_rerank(sampled_scores, post_embeddings)
+        top_k = [pid for pid, _ in reranked[: self.max_recommendations]]
 
         # Exploration: add a small slice of random unseen posts to fight collapse
         explore_k = max(1, int(self.max_recommendations * self.explore_ratio))
@@ -312,17 +335,95 @@ class CollaborativeFilteringRecommender(BaseRecommender):
         similarities.sort(key=lambda x: x[1], reverse=True)
         return similarities[:self.k_neighbors]
 
+    def _temperature_sample(self, scored_posts: Sequence[Tuple[str, float]], k: int) -> List[str]:
+        """Sample without replacement using a softmax distribution."""
+        if not scored_posts or k <= 0:
+            return []
+        k = min(k, len(scored_posts))
+        scores = np.array([max(0.0, float(s)) for _, s in scored_posts], dtype=float)
+        if np.allclose(scores, 0):
+            ids = [pid for pid, _ in scored_posts]
+            random.shuffle(ids)
+            return ids[:k]
+
+        temp = max(1e-6, float(self.sampling_temperature))
+        logits = scores / temp
+        logits = logits - np.max(logits)
+        weights = np.exp(logits)
+        probs = weights / weights.sum()
+
+        chosen: list[str] = []
+        candidates = list(scored_posts)
+        for _ in range(k):
+            if not candidates:
+                break
+            cand_ids = [pid for pid, _ in candidates]
+            cand_scores = np.array([max(0.0, float(s)) for _, s in candidates], dtype=float)
+            if np.allclose(cand_scores, 0):
+                random.shuffle(cand_ids)
+                chosen.extend(cand_ids[: (k - len(chosen))])
+                break
+            logits = cand_scores / temp
+            logits = logits - np.max(logits)
+            w = np.exp(logits)
+            p = w / w.sum()
+            idx = int(np.random.choice(len(candidates), p=p))
+            chosen.append(candidates[idx][0])
+            del candidates[idx]
+        return chosen[:k]
+
+    def _mmr_rerank(
+        self,
+        candidates: Sequence[Tuple[str, float]],
+        post_embeddings: Dict[str, np.ndarray],
+    ) -> List[Tuple[str, float]]:
+        """Maximal Marginal Relevance reranking to reduce near-duplicates."""
+        if not candidates:
+            return []
+        if self.mmr_lambda >= 0.999:
+            return list(sorted(candidates, key=lambda x: x[1], reverse=True))
+
+        lambda_val = float(np.clip(self.mmr_lambda, 0.0, 1.0))
+        remaining = list(sorted(candidates, key=lambda x: x[1], reverse=True))
+        selected: list[Tuple[str, float]] = []
+
+        def _sim(a: str, b: str) -> float:
+            va = post_embeddings.get(a)
+            vb = post_embeddings.get(b)
+            if va is None or vb is None:
+                return 0.0
+            return float(self._compute_cosine_similarity(va, vb))
+
+        while remaining and len(selected) < min(self.max_recommendations, len(remaining)):
+            if not selected:
+                selected.append(remaining.pop(0))
+                continue
+
+            best_idx = 0
+            best_score = -float("inf")
+            for idx, (pid, base_score) in enumerate(remaining):
+                max_sim = max(_sim(pid, sid) for sid, _ in selected)
+                mmr_score = lambda_val * float(base_score) - (1.0 - lambda_val) * max_sim
+                if mmr_score > best_score:
+                    best_score = mmr_score
+                    best_idx = idx
+            selected.append(remaining.pop(best_idx))
+
+        # Append any leftovers (already sorted) to keep a total ordering.
+        selected.extend(remaining)
+        return selected
+
     def _compute_recency(self, post_id: str) -> float:
-        """Exponential decay based on the latest interaction timestamp."""
+        """Exponential decay based on simulation time_step, not wall-clock time."""
         ts = self._post_latest_ts.get(post_id)
         if ts is None:
             return 1.0
         try:
-            import time
-
-            now = time.time()
-            # If timestamps are seconds-like numeric strings, decay with half-life
-            age = max(0.0, now - ts)
+            now = float(self._now_ts)
+            if now <= 0:
+                return 1.0
+            # Timestamps are time_step-like small integers in this simulation.
+            age = max(0.0, now - float(ts))
             decay = 0.5 ** (age / self.recency_half_life) if self.recency_half_life > 0 else 1.0
             return float(decay)
         except Exception:
