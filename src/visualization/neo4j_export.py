@@ -111,7 +111,7 @@ def resolve_paths(
     resolved_run_dir: Path | None = Path(run_dir) if run_dir else None
 
     if not resolved_run_dir and LATEST_RUN_FILE.exists():
-        candidate = Path(LATEST_RUN_FILE.read_text().strip())
+        candidate = Path(LATEST_RUN_FILE.read_text(encoding="utf-8").strip())
         if candidate.exists():
             resolved_run_dir = candidate
 
